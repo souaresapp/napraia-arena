@@ -16,6 +16,24 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
 
+// ─── SESSION HELPERS (5-min timeout) ─────────────────────────────────────────
+const SESSION_KEY = "napraia_user";
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+function saveSession(user) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ user, ts: Date.now() }));
+}
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const { user, ts } = JSON.parse(raw);
+    if (Date.now() - ts > SESSION_TIMEOUT) { localStorage.removeItem(SESSION_KEY); return null; }
+    return user;
+  } catch { return null; }
+}
+function clearSession() { localStorage.removeItem(SESSION_KEY); }
+function touchSession(user) { saveSession(user); } // refresh timestamp on activity
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const COURTS = [
   { id: "sicoob",   name: "Quadra Sicoob",      color: "#00a86b" },
@@ -125,11 +143,10 @@ export default function App() {
 
   // ── Booking flow ──────────────────────────────────────────────────────────
   const [bookStep, setBookStep]       = useState(1);  // 1 auth | 2 slot | 3 sport | 4 pix
-  const [me, setMe]                   = useState(null);
+  const [me, setMe]                   = useState(()=>loadSession());
   const [selSlot, setSelSlot]         = useState(null);
   const [selSport, setSelSport]       = useState(null);
   const [isLogin, setIsLogin]         = useState(true);
-  const [loginEmail, setLoginEmail]   = useState("");
   const [regForm, setRegForm]         = useState({
     name:"", email:"", phone:"", birth:"", gender:"", city:"",
     isRegular:false, regularSlots:[],
@@ -149,7 +166,11 @@ export default function App() {
   const [adminEmailDraft, setAdminEmailDraft] = useState("");
 
   // Last login memory (simulated localStorage)
-  const [lastLogin, setLastLogin]     = useState("gestor@napraia.com.br");
+  const [loginEmail, setLoginEmail]   = useState(()=>loadSession()?.email||"");
+  // shadow - remove duplicate below
+  const [lastLogin_UNUSED, setLastLogin]     = useState("gestor@napraia.com.br");
+  // Auto-fill minha reservas email from session
+  const sessionUser = loadSession();
 
   // Payment edit modal
   const [editPayModal, setEditPayModal] = useState(null); // booking key
@@ -176,7 +197,7 @@ export default function App() {
     if (!loginEmail.includes("@")) { toast_("Email inválido","error"); return; }
     const u = regUsers[loginEmail];
     if (!u) { toast_("Email não encontrado. Crie uma conta.","error"); return; }
-    setMe(u); setBookStep(2);
+    saveSession(u); setMe(u); setBookStep(2);
   }
   function doRegister() {
     const { name,email,phone,birth,gender,city,isRegular,regularSlots } = regForm;
@@ -188,7 +209,7 @@ export default function App() {
     }
     const u = { ...regForm };
     setDoc(doc(db, "users", email), u);
-    setMe(u); setBookStep(2);
+    saveSession(u); setMe(u); setBookStep(2);
     toast_("Cadastro realizado!");
   }
 
@@ -283,10 +304,12 @@ export default function App() {
   const allBk = Object.values(bookings);
 
   // ── Analytics ─────────────────────────────────────────────────────────
+  const { start: pStart, end: pEnd } = getDateRange(analyticsPeriod);
+  const filteredBk = allBk.filter(b => b.date >= pStart && b.date <= pEnd);
   const analytics = useMemo(() => {
     const byMonth={}, byGender={M:0,F:0}, byCourtTotal={}, bySportTotal={},
           byHour={}, byDow={}, ageArr={}, bySource={admin:0,online:0};
-    allBk.forEach(b=>{
+    filteredBk.forEach(b=>{
       const d=new Date(b.date);
       const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
       const ml=`${MONTHS[d.getMonth()]}/${d.getFullYear()}`;
@@ -307,7 +330,7 @@ export default function App() {
       avgAge[mk]=Math.round(ages.reduce((a,b)=>a+b,0)/ages.length);
     });
     return {byMonth,byGender,byCourtTotal,bySportTotal,byHour,byDow,avgAge,bySource};
-  },[allBk]);
+  },[filteredBk]);
 
   const sortedMo   = Object.keys(analytics.byMonth).sort();
   const totalRev   = Object.values(analytics.byMonth).reduce((s,m)=>s+m.revenue,0);
@@ -424,27 +447,38 @@ export default function App() {
   function generateExcel() {
     const now  = new Date();
     const bkList = Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date));
-    const header = ["Data","Horário","Nome","Quadra","Esporte","Valor (R$)","Status Pagamento","Tipo Regular","Origem"];
+    const header = [
+      "Data","Hora Ini","Hora Fin","Tempo Total","Quadra","Esporte",
+      "Nome","Pago (Sim/Não)","Valor Pago","Status","Tipo","Origem","Email","Telefone","Cidade"
+    ];
     const rows = bkList.map(([,b])=>{
-      const c = COURTS.find(x=>x.id===b.courtId);
-      const status = b.paid?"Pago":b.paidLater?"Pago depois":b.payError?"Erro no pagamento":"Pendente";
+      const court = COURTS.find(x=>x.id===b.courtId);
+      const status = b.paid?"Pago":b.paidLater?"Pago depois":b.payError?"Erro":"Pendente";
+      const paidYN = b.paid||b.paidLater?"Sim":"Não";
+      // Calculate end hour (1h slots)
+      const startIdx = ALL_HOURS.indexOf(b.hour);
+      const endHour = startIdx >= 0 && startIdx < ALL_HOURS.length-1 ? ALL_HOURS[startIdx+1] : b.hour;
       return [
-        b.date, b.hour, b.name, c?.name||"", b.sport, b.amount,
-        status, b.regularSlot?"Regular":"Avulso", b.byAdmin?"Gestor":"Online"
+        b.date, b.hour, endHour, "01:00",
+        court?.name||"", b.sport,
+        b.name||"", paidYN, b.amount||"",
+        status, b.regularSlot?"Regular":"Avulso",
+        b.byAdmin?"Gestor":"Online",
+        b.email||"", b.phone||"", b.city||""
       ];
     });
     const csv = [header, ...rows]
-      .map(r => r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";"))
+      .map(r => r.map(v=>`"${String(v||"").replace(/"/g,"\"\"" )}"`).join(";"))
       .join("\n");
-    const bom = "\uFEFF"; // UTF-8 BOM for Excel
+    const bom = "\uFEFF";
     const blob = new Blob([bom+csv], { type:"text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url;
-    a.download = `napraia-pagamentos-${fmt(now)}.csv`;
+    a.download = `napraia-agendamentos-${fmt(now)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast_("Planilha Excel gerada com sucesso!");
+    toast_("Planilha gerada! Abre direto no Excel e Google Sheets.");
   }
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
@@ -850,7 +884,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <F label="Senha" type="password" v={adminPass} set={e=>setAdminPass(e.target.value)} ph="Senha de acesso"/>
+                <PwdInput label="Senha" v={adminPass} set={e=>setAdminPass(e.target.value)} ph="Senha de acesso"/>
                 <button style={{...S.btnO,width:"100%",marginTop:8}} onClick={()=>{
                   if (adminPass==="admin123") { setAdminOk(true); setLastLogin(adminEmail); }
                   else toast_("Senha incorreta","error");
@@ -1015,14 +1049,29 @@ export default function App() {
                 {/* ─── TAB GESTÃO ─── */}
                 {adminTab==="gestao"&&(
                   <div>
-                    <div style={S.kpiGrid}>
-                      <KPI icon="📋" label="Total Reservas" v={totalBk}/>
-                      <KPI icon="💰" label="Faturamento" v={`R$${totalRev.toLocaleString("pt-BR")}`}/>
-                      <KPI icon="🏆" label="Quadra +" v={Object.entries(analytics.byCourtTotal).sort((a,b)=>b[1]-a[1])[0]?.[0]==="sicoob"?"Sicoob":"Tropical Net"}/>
-                      <KPI icon="🎾" label="Esporte +" v={Object.entries(analytics.bySportTotal).sort((a,b)=>b[1]-a[1])[0]?.[0]||"-"}/>
-                      <KPI icon="🛠" label="Via Gestor" v={analytics.bySource.admin}/>
-                      <KPI icon="📱" label="Online" v={analytics.bySource.online}/>
-                    </div>
+                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod}
+                      customStart={customStart} setCustomStart={setCustomStart}
+                      customEnd={customEnd} setCustomEnd={setCustomEnd}/>
+                    {(()=>{
+                      const concluded = filteredBk.filter(b=>b.date < fmt(new Date())).length;
+                      const recebido  = filteredBk.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
+                      const aReceber  = filteredBk.filter(b=>b.paidLater||(!b.paid&&!b.paidLater&&!b.payError)).reduce((s,b)=>s+b.amount,0);
+                      const topCourt  = Object.entries(analytics.byCourtTotal).sort((a,b)=>b[1]-a[1])[0];
+                      const topSport  = Object.entries(analytics.bySportTotal).sort((a,b)=>b[1]-a[1])[0];
+                      return (
+                        <div style={S.kpiGrid}>
+                          <KPI icon="📋" label="Total Reservas" v={filteredBk.length}/>
+                          <KPI icon="✅" label="Concluídos" v={concluded}/>
+                          <KPI icon="💰" label="Faturamento" v={`R$${(recebido+aReceber).toLocaleString("pt-BR")}`}/>
+                          <KPI icon="✅" label="Recebido" v={`R$${recebido.toLocaleString("pt-BR")}`}/>
+                          <KPI icon="⏳" label="A Receber" v={`R$${aReceber.toLocaleString("pt-BR")}`}/>
+                          <KPI icon="🏆" label="Quadra +" v={topCourt?.[0]==="sicoob"?"Sicoob":"Trop. Net"}/>
+                          <KPI icon="🎾" label="Esporte +" v={topSport?.[0]||"-"}/>
+                          <KPI icon="🛠" label="Via Gestor" v={analytics.bySource.admin}/>
+                          <KPI icon="📱" label="Online" v={analytics.bySource.online}/>
+                        </div>
+                      );
+                    })()}
 
                     <Section title="📈 Faturamento por Mês">
                       <Bar data={sortedMo.map(mk=>({label:analytics.byMonth[mk].label.slice(0,6),value:analytics.byMonth[mk].revenue}))} color="#f97316" unit="R$"/>
@@ -1117,6 +1166,9 @@ export default function App() {
                 {/* ─── TAB HEATMAP ─── */}
                 {adminTab==="heatmap"&&(
                   <div>
+                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod}
+                      customStart={customStart} setCustomStart={setCustomStart}
+                      customEnd={customEnd} setCustomEnd={setCustomEnd}/>
                     <Section title="🔥 Mapa de Calor — Dia × Horário">
                       <p style={{color:"#555",fontSize:13,marginBottom:14}}>Número de reservas por combinação de dia e horário. Mais intenso = mais reservas.</p>
                       <div style={{overflowX:"auto"}}>
@@ -1217,6 +1269,7 @@ export default function App() {
                           <button style={{...S.btnO,width:"100%"}} onClick={generatePDF}>
                             📥 Baixar Relatório PDF
                           </button>
+                          <p style={{color:"#555",fontSize:11,marginTop:8}}>Inclui: KPIs, faturamento mensal, ano atual vs anterior, esportes, quadras e controle de pagamentos.</p>
                         </div>
 
                         {/* Excel */}
@@ -1402,7 +1455,7 @@ function AvGrid({ bookings, selDate, selSlot, onPick, me, adminMode, onMarkPaid,
         {hours.map(h=><div key={h} style={S.avHLbl}>{h}</div>)}
       </div>
       {COURTS.map(c=>(
-        <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",minWidth: adminMode?220:130}}>
+        <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",minWidth: adminMode?160:120}}>
           <div style={{...S.avHdr,color:c.color,borderBottom:`2px solid ${c.color}`}}>{c.name}</div>
           {hours.map(h=>{
             const b=isBooked(c.id,selDate,h);
@@ -1472,6 +1525,24 @@ function PixQR() {
 }
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
+
+// ─── PASSWORD INPUT WITH SHOW/HIDE ───────────────────────────────────────────
+function PwdInput({label, v, set, ph}) {
+  const [show, setShow] = React.useState(false);
+  return (
+    <div style={S.fg}>
+      {label&&<label style={S.lbl}>{label}</label>}
+      <div style={{position:"relative"}}>
+        <input style={{...S.inp,paddingRight:44}} type={show?"text":"password"} value={v} onChange={set} placeholder={ph}/>
+        <button onClick={()=>setShow(s=>!s)}
+          style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:16,padding:4}}>
+          {show?"🙈":"👁️"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function F({label,type="text",v,set,ph}) {
   return (
     <div style={S.fg}>
@@ -1480,6 +1551,39 @@ function F({label,type="text",v,set,ph}) {
     </div>
   );
 }
+
+// ─── PERIOD SELECTOR ─────────────────────────────────────────────────────────
+function PeriodSelector({period, setPeriod, customStart, setCustomStart, customEnd, setCustomEnd}) {
+  const opts = [
+    {v:"30d",   l:"Últ. 30 dias"},
+    {v:"month", l:"Mês atual"},
+    {v:"year",  l:"Ano atual"},
+    {v:"lastyear", l:"Ano anterior"},
+    {v:"custom",l:"Personalizado"},
+  ];
+  return (
+    <div style={{marginBottom:20}}>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+        {opts.map(o=>(
+          <button key={o.v} onClick={()=>setPeriod(o.v)}
+            style={{background:period===o.v?"#f97316":"#1a1a1a",color:period===o.v?"#fff":"#888",
+              border:`1px solid ${period===o.v?"#f97316":"#2a2a2a"}`,borderRadius:8,
+              padding:"6px 12px",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600}}>
+            {o.l}
+          </button>
+        ))}
+      </div>
+      {period==="custom"&&(
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <input type="date" style={{...S.inp,width:"auto",fontSize:13}} value={customStart} onChange={e=>setCustomStart(e.target.value)}/>
+          <span style={{color:"#666"}}>até</span>
+          <input type="date" style={{...S.inp,width:"auto",fontSize:13}} value={customEnd} onChange={e=>setCustomEnd(e.target.value)}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WeekNav({wd,sel,off,setOff,setSel,ac="#f97316"}) {
   const today=fmt(new Date());
   return (
@@ -1492,7 +1596,7 @@ function WeekNav({wd,sel,off,setOff,setSel,ac="#f97316"}) {
             <button key={i} disabled={past} onClick={()=>setSel(ds)}
               style={{...S.dBtn,...(sel===ds?{background:ac,color:"#fff",borderColor:ac}:{}),...(past?{opacity:.3,cursor:"not-allowed"}:{})}}>
               <div style={{fontSize:9}}>{DAYS_SHORT[d.getDay()]}</div>
-              <div style={{fontWeight:700,fontSize:12}}>{String(d.getDate()).padStart(2,"0")}/{String(d.getMonth()+1).padStart(2,"0")}</div>
+              <div style={{fontWeight:700,fontSize:13}}>{d.getDate()}</div>
               {ds===today&&<div style={{fontSize:8,color:sel===ds?"#fff":ac}}>Hoje</div>}
             </button>
           );
