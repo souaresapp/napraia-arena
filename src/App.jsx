@@ -1,38 +1,12 @@
-import { useState, useMemo, useEffect } from "react";
-import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDocs } from "firebase/firestore";
-
-// ─── FIREBASE CONFIG ──────────────────────────────────────────────────────────
-const firebaseConfig = {
-  apiKey: "AIzaSyAbNKuhczJYVWADu1WKUy0C53Dn0pj4i9U",
-  authDomain: "napraia-arena.firebaseapp.com",
-  projectId: "napraia-arena",
-  storageBucket: "napraia-arena.firebasestorage.app",
-  messagingSenderId: "970179977450",
-  appId: "1:970179977450:web:fd95ffae06591e35fdf793",
-  measurementId: "G-Z3TC2TBVL3"
-};
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
+import { useState, useMemo } from "react";
 
 
-// ─── SESSION HELPERS (5-min timeout) ─────────────────────────────────────────
+// ─── SESSION (5 min timeout) ─────────────────────────────────────────────────
 const SESSION_KEY = "napraia_user";
-const SESSION_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-function saveSession(user) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ user, ts: Date.now() }));
-}
-function loadSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const { user, ts } = JSON.parse(raw);
-    if (Date.now() - ts > SESSION_TIMEOUT) { localStorage.removeItem(SESSION_KEY); return null; }
-    return user;
-  } catch { return null; }
-}
-function clearSession() { localStorage.removeItem(SESSION_KEY); }
-function touchSession(user) { saveSession(user); } // refresh timestamp on activity
+const SESSION_MS  = 5 * 60 * 1000;
+function saveSession(u) { try { localStorage.setItem(SESSION_KEY, JSON.stringify({u, ts:Date.now()})); } catch(e){} }
+function loadSession() { try { const r=localStorage.getItem(SESSION_KEY); if(!r) return null; const {u,ts}=JSON.parse(r); if(Date.now()-ts>SESSION_MS){localStorage.removeItem(SESSION_KEY);return null;} return u; } catch(e){return null;} }
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch(e){} }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const COURTS = [
@@ -99,44 +73,56 @@ function nameInitials(name) {
   return `${first} ${last}`;
 }
 
-
+// ─── SEED DATA ────────────────────────────────────────────────────────────────
+function seedBookings() {
+  const prices = { common: 90, regular: 80 };
+  const bk = {};
+  const baseUsers = [
+    { name:"Ana Silva",      gender:"F", birth:"1990-05-12", isRegular:true,  regularDow:2, regularHour:"09:00" },
+    { name:"Carlos Souza",   gender:"M", birth:"1985-03-20", isRegular:false },
+    { name:"Beatriz Lima",   gender:"F", birth:"1998-07-08", isRegular:true,  regularDow:4, regularHour:"10:00" },
+    { name:"Rafael Costa",   gender:"M", birth:"2000-11-25", isRegular:false },
+    { name:"Fernanda Rocha", gender:"F", birth:"1992-01-14", isRegular:true,  regularDow:6, regularHour:"08:00" },
+    { name:"Marcos Alves",   gender:"M", birth:"1988-09-30", isRegular:false },
+  ];
+  const sports = ["Beach Tennis","Beach Tennis","Futvolei","Vôlei","Beach Tennis","Futvolei"];
+  const now = new Date();
+  let id = 1;
+  for (let m = 3; m >= 0; m--) {
+    for (let day = 1; day <= 28; day += 2 + Math.floor(Math.random() * 3)) {
+      const d = new Date(now.getFullYear(), now.getMonth() - m, day);
+      if (d > now) continue;
+      const dateStr = fmt(d);
+      COURTS.forEach((c, ci) => {
+        const hour = HOURS[Math.floor(Math.random() * HOURS.length)];
+        const key  = `${c.id}-${dateStr}-${hour}`;
+        if (!bk[key]) {
+          const u   = baseUsers[(id + ci) % baseUsers.length];
+          const reg = isRegularSlot(u, dateStr, hour);
+          // ~10% admin-created bookings
+          const byAdmin = Math.random() < 0.10;
+          bk[key] = {
+            id: String(id++), courtId: c.id, date: dateStr, hour,
+            name: u.name, gender: u.gender, birth: u.birth,
+            sport: sports[(id + ci) % sports.length],
+            isRegular: !!u.isRegular, regularSlot: reg,
+            byAdmin,
+            paid: Math.random() > 0.35, paidLater: false,
+            amount: reg ? prices.regular : prices.common,
+          };
+        }
+      });
+    }
+  }
+  return bk;
+}
 
 // ─── MAIN APP ────────────────────────────────────────────────────────────────
 export default function App() {
   const [prices, setPrices]           = useState({ common: 90, regular: 80 });
   const [view, setView]               = useState("home");
-  const [bookings, setBookings]       = useState({});
-  const [regUsers, setRegUsers]       = useState({});
-  const [dbLoading, setDbLoading]     = useState(true);
-
-  // ── Firebase: load bookings in real-time ─────────────────────────────────
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "bookings"), (snap) => {
-      const bk = {};
-      snap.forEach(d => { bk[d.id] = d.data(); });
-      setBookings(bk);
-      setDbLoading(false);
-    });
-    return () => unsub();
-  }, []);
-
-  // ── Firebase: load users in real-time ────────────────────────────────────
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "users"), (snap) => {
-      const us = {};
-      snap.forEach(d => { us[d.id] = d.data(); });
-      setRegUsers(us);
-    });
-    return () => unsub();
-  }, []);
-
-  // ── Firebase: load prices ────────────────────────────────────────────────
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, "config", "prices"), (d) => {
-      if (d.exists()) setPrices(d.data());
-    });
-    return () => unsub();
-  }, []);         // email → user profile
+  const [bookings, setBookings]       = useState(seedBookings);
+  const [regUsers, setRegUsers]       = useState({});         // email → user profile
   const [weekOffset, setWeekOffset]   = useState(0);
   const [selDate, setSelDate]         = useState(fmt(new Date()));
   const [toast, setToast]             = useState(null);
@@ -147,6 +133,7 @@ export default function App() {
   const [selSlot, setSelSlot]         = useState(null);
   const [selSport, setSelSport]       = useState(null);
   const [isLogin, setIsLogin]         = useState(true);
+  const [loginEmail, setLoginEmail]   = useState(()=>loadSession()?.email||"");
   const [regForm, setRegForm]         = useState({
     name:"", email:"", phone:"", birth:"", gender:"", city:"",
     isRegular:false, regularSlots:[],
@@ -166,14 +153,14 @@ export default function App() {
   const [adminEmailDraft, setAdminEmailDraft] = useState("");
 
   // Last login memory (simulated localStorage)
-  const [loginEmail, setLoginEmail]   = useState(()=>loadSession()?.email||"");
-  // shadow - remove duplicate below
   const [lastLogin, setLastLogin]     = useState("gestor@napraia.com.br");
-  // Auto-fill minha reservas email from session
-  const sessionUser = loadSession();
 
   // Payment edit modal
-  const [editPayModal, setEditPayModal] = useState(null); // booking key
+  const [editPayModal, setEditPayModal] = useState(null);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState("30d");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd]     = useState("");
+ // booking key
   const [reportGenerated, setReportGenerated] = useState(null);
 
   // Admin manual booking form
@@ -197,7 +184,7 @@ export default function App() {
     if (!loginEmail.includes("@")) { toast_("Email inválido","error"); return; }
     const u = regUsers[loginEmail];
     if (!u) { toast_("Email não encontrado. Crie uma conta.","error"); return; }
-    saveSession(u); setMe(u); setBookStep(2);
+    setMe(u); setBookStep(2);
   }
   function doRegister() {
     const { name,email,phone,birth,gender,city,isRegular,regularSlots } = regForm;
@@ -208,7 +195,7 @@ export default function App() {
       toast_("Adicione ao menos um dia/horário fixo para uso regular","error"); return;
     }
     const u = { ...regForm };
-    setDoc(doc(db, "users", email), u);
+    setRegUsers(p => ({ ...p, [email]: u }));
     saveSession(u); setMe(u); setBookStep(2);
     toast_("Cadastro realizado!");
   }
@@ -223,16 +210,15 @@ export default function App() {
     const { courtId,date,hour } = selSlot;
     const key = `${courtId}-${date}-${hour}`;
     const qualifies = me?.isRegular && isRegularSlot(me, date, hour);
-    const newBooking = {
-      id: key, courtId, date, hour,
+    setBookings(b => ({ ...b, [key]: {
+      id: Date.now().toString(), courtId, date, hour,
       name:me.name, email:me.email, phone:me.phone,
       birth:me.birth, gender:me.gender, city:me.city,
       sport:selSport, isRegular:!!me.isRegular, regularSlot:qualifies,
       byAdmin:false,
       paid:false, paidLater:false,
       amount: qualifies ? prices.regular : prices.common,
-    };
-    setDoc(doc(db, "bookings", key), newBooking);
+    }}));
     setBookStep(4);
   }
   function resetFlow() {
@@ -247,25 +233,26 @@ export default function App() {
     else toast_("Senha incorreta","error");
   }
   function markPaid(key) {
-    updateDoc(doc(db, "bookings", key), {paid:true, paidLater:false});
+    setBookings(b=>({...b,[key]:{...b[key],paid:true,paidLater:false}}));
     toast_("Marcado como pago!");
   }
   function markPaidLater(key) {
-    updateDoc(doc(db, "bookings", key), {paid:false, paidLater:true});
+    setBookings(b=>({...b,[key]:{...b[key],paid:false,paidLater:true}}));
     toast_("Marcado como 'pago depois'");
   }
   function markNotPaid(key) {
-    updateDoc(doc(db, "bookings", key), {paid:false, paidLater:false});
+    setBookings(b=>({...b,[key]:{...b[key],paid:false,paidLater:false}}));
     toast_("Marcado como não pago");
   }
   function setPaymentStatus(key, status) {
+    // status: 'paid' | 'later' | 'unpaid' | 'error'
     const map = {
       paid:   { paid:true,  paidLater:false, payError:false },
       later:  { paid:false, paidLater:true,  payError:false },
       unpaid: { paid:false, paidLater:false, payError:false },
       error:  { paid:false, paidLater:false, payError:true  },
     };
-    updateDoc(doc(db, "bookings", key), map[status]);
+    setBookings(b=>({...b,[key]:{...b[key],...map[status]}}));
     setEditPayModal(null);
     toast_("Status atualizado!");
   }
@@ -273,7 +260,6 @@ export default function App() {
     const c=Number(pEdit.common), r=Number(pEdit.regular);
     if (!c||!r||c<1||r<1) { toast_("Valores inválidos","error"); return; }
     setPrices({common:c,regular:r});
-    setDoc(doc(db, "config", "prices"), {common:c, regular:r});
     toast_("Preços atualizados!");
   }
 
@@ -285,15 +271,14 @@ export default function App() {
     if (isBooked(manForm.courtId,selDate,manForm.hour)) {
       toast_("Este horário já está ocupado","error"); return;
     }
-    const adminBooking = {
-      id:key, courtId:manForm.courtId, date:selDate, hour:manForm.hour,
+    setBookings(b=>({...b,[key]:{
+      id:Date.now().toString(), courtId:manForm.courtId, date:selDate, hour:manForm.hour,
       name:manForm.name, gender:"-", birth:"", city:"",
       sport:manForm.sport, isRegular:false, regularSlot:false,
       byAdmin:true,
       paid:manForm.paid, paidLater:false,
       amount:prices.common,
-    };
-    setDoc(doc(db, "bookings", key), adminBooking);
+    }}));
     setManMsg(`✅ Reserva criada para ${manForm.name} às ${manForm.hour}`);
     setManForm(f=>({...f,name:"",hour:"",paid:false}));
     toast_("Reserva manual criada!");
@@ -304,21 +289,21 @@ export default function App() {
   const allBk = Object.values(bookings);
 
   // ── Analytics ─────────────────────────────────────────────────────────
+
   function getDateRange(period) {
-    const now = new Date();
-    const todayStr = fmt(now);
+    const now = new Date(); const t = fmt(now);
     switch(period) {
-      case "30d": { const s = new Date(now); s.setDate(s.getDate()-30); return { start: fmt(s), end: todayStr }; }
-      case "month": { const s = new Date(now.getFullYear(), now.getMonth(), 1); return { start: fmt(s), end: todayStr }; }
-      case "year": return { start: `${now.getFullYear()}-01-01`, end: todayStr };
-      case "lastyear": { const y = now.getFullYear()-1; return { start: `${y}-01-01`, end: `${y}-12-31` }; }
-      case "custom": return { start: customStart||"2020-01-01", end: customEnd||todayStr };
-      default: return { start: "2020-01-01", end: todayStr };
+      case "30d": { const s=new Date(now); s.setDate(s.getDate()-30); return {start:fmt(s),end:t}; }
+      case "month": return {start:`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-01`,end:t};
+      case "year":  return {start:`${now.getFullYear()}-01-01`,end:t};
+      case "lastyear": { const y=now.getFullYear()-1; return {start:`${y}-01-01`,end:`${y}-12-31`}; }
+      case "custom": return {start:customStart||"2020-01-01",end:customEnd||t};
+      default: return {start:"2020-01-01",end:t};
     }
   }
-  
+
   const { start: pStart, end: pEnd } = getDateRange(analyticsPeriod);
-  const filteredBk = useMemo(() => allBk.filter(b => b.date >= pStart && b.date <= pEnd), [allBk, pStart, pEnd]);
+  const filteredBk = allBk.filter(b => b.date >= pStart && b.date <= pEnd);
   const analytics = useMemo(() => {
     const byMonth={}, byGender={M:0,F:0}, byCourtTotal={}, bySportTotal={},
           byHour={}, byDow={}, ageArr={}, bySource={admin:0,online:0};
@@ -460,38 +445,33 @@ export default function App() {
   function generateExcel() {
     const now  = new Date();
     const bkList = Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date));
-    const header = [
-      "Data","Hora Ini","Hora Fin","Tempo Total","Quadra","Esporte",
-      "Nome","Pago (Sim/Não)","Valor Pago","Status","Tipo","Origem","Email","Telefone","Cidade"
-    ];
+    const header = ["Data","Hora Ini","Hora Fin","Tempo Total","Quadra","Esporte","Nome","Pago (Sim/Não)","Valor Pago","Status","Tipo","Origem","Email","Telefone","Cidade"];
     const rows = bkList.map(([,b])=>{
       const court = COURTS.find(x=>x.id===b.courtId);
       const status = b.paid?"Pago":b.paidLater?"Pago depois":b.payError?"Erro":"Pendente";
-      const paidYN = b.paid||b.paidLater?"Sim":"Não";
-      // Calculate end hour (1h slots)
+      const paidYN = (b.paid||b.paidLater)?"Sim":"Não";
       const startIdx = ALL_HOURS.indexOf(b.hour);
-      const endHour = startIdx >= 0 && startIdx < ALL_HOURS.length-1 ? ALL_HOURS[startIdx+1] : b.hour;
+      const endHour = startIdx>=0&&startIdx<ALL_HOURS.length-1?ALL_HOURS[startIdx+1]:b.hour;
       return [
         b.date, b.hour, endHour, "01:00",
-        court?.name||"", b.sport,
-        b.name||"", paidYN, b.amount||"",
-        status, b.regularSlot?"Regular":"Avulso",
-        b.byAdmin?"Gestor":"Online",
+        court?.name||"", b.sport, b.name||"",
+        paidYN, b.amount||0, status,
+        b.regularSlot?"Regular":"Avulso", b.byAdmin?"Gestor":"Online",
         b.email||"", b.phone||"", b.city||""
       ];
     });
     const csv = [header, ...rows]
-      .map(r => r.map(v=>`"${String(v||"").replace(/"/g,"\"\"" )}"`).join(";"))
+      .map(r => r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";"))
       .join("\n");
-    const bom = "\uFEFF";
+    const bom = "\uFEFF"; // UTF-8 BOM for Excel
     const blob = new Blob([bom+csv], { type:"text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url;
-    a.download = `napraia-agendamentos-${fmt(now)}.csv`;
+    a.download = `napraia-pagamentos-${fmt(now)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast_("Planilha gerada! Abre direto no Excel e Google Sheets.");
+    toast_("Planilha Excel gerada com sucesso!");
   }
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
@@ -542,17 +522,8 @@ export default function App() {
 
       <main style={S.main}>
 
-        {/* ══ LOADING ══ */}
-        {dbLoading && (
-          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"60vh",gap:16}}>
-            <div style={{fontSize:40}}>🏖️</div>
-            <div style={{color:"#f97316",fontWeight:700,fontSize:16}}>Carregando Na Praia...</div>
-            <div style={{color:"#555",fontSize:13}}>Conectando ao banco de dados</div>
-          </div>
-        )}
-
         {/* ══════ HOME ══════ */}
-        {!dbLoading && view==="home"&&(
+        {view==="home"&&(
           <div className="fi">
             <div style={S.hero}>
               <div style={S.heroTag}>Arena Multi Esportiva · Dionísio - MG</div>
@@ -597,7 +568,7 @@ export default function App() {
         )}
 
         {/* ══════ BOOK ══════ */}
-        {!dbLoading && view==="book"&&(
+        {view==="book"&&(
           <div className="fi">
             <h2 style={S.pageTitle}>Nova Reserva</h2>
             {/* Steps */}
@@ -826,7 +797,7 @@ export default function App() {
         )}
 
         {/* ══════ AVAILABILITY ══════ */}
-        {!dbLoading && view==="availability"&&(
+        {view==="availability"&&(
           <div className="fi">
             <h2 style={S.pageTitle}>Disponibilidade das Quadras</h2>
             <WeekNav wd={weekDates} sel={selDate} off={weekOffset} setOff={setWeekOffset} setSel={setSelDate} ac="#f97316"/>
@@ -845,7 +816,7 @@ export default function App() {
         )}
 
         {/* ══════ MINHAS ══════ */}
-        {!dbLoading && view==="minha"&&(
+        {view==="minha"&&(
           <div className="fi">
             <h2 style={S.pageTitle}>Minhas Reservas</h2>
             <div style={{maxWidth:400,marginBottom:22}}>
@@ -883,7 +854,7 @@ export default function App() {
         )}
 
         {/* ══════ ADMIN ══════ */}
-        {!dbLoading && view==="admin"&&(
+        {view==="admin"&&(
           <div className="fi">
             {!adminOk?(
               <div style={{maxWidth:340}}>
@@ -1062,28 +1033,24 @@ export default function App() {
                 {/* ─── TAB GESTÃO ─── */}
                 {adminTab==="gestao"&&(
                   <div>
-                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod}
-                      customStart={customStart} setCustomStart={setCustomStart}
-                      customEnd={customEnd} setCustomEnd={setCustomEnd}/>
+                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}/>
                     {(()=>{
-                      const concluded = filteredBk.filter(b=>b.date < fmt(new Date())).length;
-                      const recebido  = filteredBk.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
-                      const aReceber  = filteredBk.filter(b=>b.paidLater||(!b.paid&&!b.paidLater&&!b.payError)).reduce((s,b)=>s+b.amount,0);
-                      const topCourt  = Object.entries(analytics.byCourtTotal).sort((a,b)=>b[1]-a[1])[0];
-                      const topSport  = Object.entries(analytics.bySportTotal).sort((a,b)=>b[1]-a[1])[0];
-                      return (
-                        <div style={S.kpiGrid}>
-                          <KPI icon="📋" label="Total Reservas" v={filteredBk.length}/>
-                          <KPI icon="✅" label="Concluídos" v={concluded}/>
-                          <KPI icon="💰" label="Faturamento" v={`R$${(recebido+aReceber).toLocaleString("pt-BR")}`}/>
-                          <KPI icon="✅" label="Recebido" v={`R$${recebido.toLocaleString("pt-BR")}`}/>
-                          <KPI icon="⏳" label="A Receber" v={`R$${aReceber.toLocaleString("pt-BR")}`}/>
-                          <KPI icon="🏆" label="Quadra +" v={topCourt?.[0]==="sicoob"?"Sicoob":"Trop. Net"}/>
-                          <KPI icon="🎾" label="Esporte +" v={topSport?.[0]||"-"}/>
-                          <KPI icon="🛠" label="Via Gestor" v={analytics.bySource.admin}/>
-                          <KPI icon="📱" label="Online" v={analytics.bySource.online}/>
-                        </div>
-                      );
+                      const concl=filteredBk.filter(b=>b.date<fmt(new Date())).length;
+                      const rec=filteredBk.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
+                      const arec=filteredBk.filter(b=>!b.paid).reduce((s,b)=>s+b.amount,0);
+                      const tCourt=Object.entries(analytics.byCourtTotal).sort((a,b)=>b[1]-a[1])[0];
+                      const tSport=Object.entries(analytics.bySportTotal).sort((a,b)=>b[1]-a[1])[0];
+                      return <div style={S.kpiGrid}>
+                        <KPI icon="📋" label="Reservas" v={filteredBk.length}/>
+                        <KPI icon="✅" label="Concluídos" v={concl}/>
+                        <KPI icon="💰" label="Faturamento" v={`R$${(rec+arec).toLocaleString("pt-BR")}`}/>
+                        <KPI icon="💚" label="Recebido" v={`R$${rec.toLocaleString("pt-BR")}`}/>
+                        <KPI icon="⏳" label="A Receber" v={`R$${arec.toLocaleString("pt-BR")}`}/>
+                        <KPI icon="🏆" label="Quadra +" v={tCourt?.[0]==="sicoob"?"Sicoob":"Trop. Net"}/>
+                        <KPI icon="🎾" label="Esporte +" v={tSport?.[0]||"-"}/>
+                        <KPI icon="🛠" label="Gestor" v={analytics.bySource.admin}/>
+                        <KPI icon="📱" label="Online" v={analytics.bySource.online}/>
+                      </div>;
                     })()}
 
                     <Section title="📈 Faturamento por Mês">
@@ -1179,9 +1146,7 @@ export default function App() {
                 {/* ─── TAB HEATMAP ─── */}
                 {adminTab==="heatmap"&&(
                   <div>
-                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod}
-                      customStart={customStart} setCustomStart={setCustomStart}
-                      customEnd={customEnd} setCustomEnd={setCustomEnd}/>
+                    <PeriodSelector period={analyticsPeriod} setPeriod={setAnalyticsPeriod} customStart={customStart} setCustomStart={setCustomStart} customEnd={customEnd} setCustomEnd={setCustomEnd}/>
                     <Section title="🔥 Mapa de Calor — Dia × Horário">
                       <p style={{color:"#555",fontSize:13,marginBottom:14}}>Número de reservas por combinação de dia e horário. Mais intenso = mais reservas.</p>
                       <div style={{overflowX:"auto"}}>
@@ -1282,7 +1247,6 @@ export default function App() {
                           <button style={{...S.btnO,width:"100%"}} onClick={generatePDF}>
                             📥 Baixar Relatório PDF
                           </button>
-                          <p style={{color:"#555",fontSize:11,marginTop:8}}>Inclui: KPIs, faturamento mensal, ano atual vs anterior, esportes, quadras e controle de pagamentos.</p>
                         </div>
 
                         {/* Excel */}
@@ -1468,7 +1432,7 @@ function AvGrid({ bookings, selDate, selSlot, onPick, me, adminMode, onMarkPaid,
         {hours.map(h=><div key={h} style={S.avHLbl}>{h}</div>)}
       </div>
       {COURTS.map(c=>(
-        <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",minWidth: adminMode?160:120}}>
+        <div key={c.id} style={{flex:1,display:"flex",flexDirection:"column",minWidth: adminMode?155:120}}>
           <div style={{...S.avHdr,color:c.color,borderBottom:`2px solid ${c.color}`}}>{c.name}</div>
           {hours.map(h=>{
             const b=isBooked(c.id,selDate,h);
@@ -1539,7 +1503,6 @@ function PixQR() {
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
 
-// ─── PASSWORD INPUT WITH SHOW/HIDE ───────────────────────────────────────────
 function PwdInput({label, v, set, ph}) {
   const [show, setShow] = useState(false);
   return (
@@ -1547,8 +1510,8 @@ function PwdInput({label, v, set, ph}) {
       {label&&<label style={S.lbl}>{label}</label>}
       <div style={{position:"relative"}}>
         <input style={{...S.inp,paddingRight:44}} type={show?"text":"password"} value={v} onChange={set} placeholder={ph}/>
-        <button onClick={()=>setShow(s=>!s)}
-          style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:16,padding:4}}>
+        <button type="button" onClick={()=>setShow(s=>!s)}
+          style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#888",fontSize:18,padding:2,lineHeight:1}}>
           {show?"🙈":"👁️"}
         </button>
       </div>
@@ -1565,15 +1528,8 @@ function F({label,type="text",v,set,ph}) {
   );
 }
 
-// ─── PERIOD SELECTOR ─────────────────────────────────────────────────────────
 function PeriodSelector({period, setPeriod, customStart, setCustomStart, customEnd, setCustomEnd}) {
-  const opts = [
-    {v:"30d",   l:"Últ. 30 dias"},
-    {v:"month", l:"Mês atual"},
-    {v:"year",  l:"Ano atual"},
-    {v:"lastyear", l:"Ano anterior"},
-    {v:"custom",l:"Personalizado"},
-  ];
+  const opts = [{v:"30d",l:"Últ. 30 dias"},{v:"month",l:"Mês atual"},{v:"year",l:"Ano atual"},{v:"lastyear",l:"Ano anterior"},{v:"custom",l:"Personalizado"}];
   return (
     <div style={{marginBottom:20}}>
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
@@ -1609,7 +1565,7 @@ function WeekNav({wd,sel,off,setOff,setSel,ac="#f97316"}) {
             <button key={i} disabled={past} onClick={()=>setSel(ds)}
               style={{...S.dBtn,...(sel===ds?{background:ac,color:"#fff",borderColor:ac}:{}),...(past?{opacity:.3,cursor:"not-allowed"}:{})}}>
               <div style={{fontSize:9}}>{DAYS_SHORT[d.getDay()]}</div>
-              <div style={{fontWeight:700,fontSize:13}}>{d.getDate()}</div>
+              <div style={{fontWeight:700,fontSize:12}}>{String(d.getDate()).padStart(2,"0")}/{String(d.getMonth()+1).padStart(2,"0")}</div>
               {ds===today&&<div style={{fontSize:8,color:sel===ds?"#fff":ac}}>Hoje</div>}
             </button>
           );
@@ -1695,7 +1651,7 @@ const S = {
   avHLbl:{height:42,display:"flex",alignItems:"center",justifyContent:"flex-end",paddingRight:8,fontSize:11,color:"#333",borderTop:"1px solid #141414"},
   avHdr:{padding:"10px 8px",fontWeight:700,fontSize:12,textAlign:"center",background:"#141414",height:44,display:"flex",alignItems:"center",justifyContent:"center",boxSizing:"border-box"},
   avCell:{height:42,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:600,borderTop:"1px solid #111",borderLeft:"1px solid #1a1a1a",transition:"all .15s"},
-  adminCell:{minHeight:96,display:"flex",flexDirection:"column",justifyContent:"center",padding:"8px 10px",border:"1px solid #111",borderTop:"1px solid #1a1a1a",fontSize:12},
+  adminCell:{minHeight:78,display:"flex",flexDirection:"column",justifyContent:"center",padding:"5px 7px",border:"1px solid #111",borderTop:"1px solid #1a1a1a",fontSize:11},
   aGreen:{background:"#14532d",color:"#22c55e",border:"none",borderRadius:5,padding:"3px 7px",cursor:"pointer",fontFamily:"inherit",fontSize:10,fontWeight:700,marginBottom:2},
   aBlue:{background:"#1e3a5f",color:"#60a5fa",border:"none",borderRadius:5,padding:"3px 7px",cursor:"pointer",fontFamily:"inherit",fontSize:10,fontWeight:700},
   slotBanner:{borderRadius:10,padding:"12px 16px",fontSize:13,marginTop:14},
