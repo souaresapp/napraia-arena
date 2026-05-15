@@ -168,7 +168,7 @@ export default function App() {
   // Last login memory (simulated localStorage)
   const [loginEmail, setLoginEmail]   = useState(()=>loadSession()?.email||"");
   // shadow - remove duplicate below
-  const [lastLogin_UNUSED, setLastLogin]     = useState("gestor@napraia.com.br");
+  const [lastLogin, setLastLogin]     = useState("gestor@napraia.com.br");
   // Auto-fill minha reservas email from session
   const sessionUser = loadSession();
 
@@ -304,8 +304,21 @@ export default function App() {
   const allBk = Object.values(bookings);
 
   // ── Analytics ─────────────────────────────────────────────────────────
+  function getDateRange(period) {
+    const now = new Date();
+    const todayStr = fmt(now);
+    switch(period) {
+      case "30d": { const s = new Date(now); s.setDate(s.getDate()-30); return { start: fmt(s), end: todayStr }; }
+      case "month": { const s = new Date(now.getFullYear(), now.getMonth(), 1); return { start: fmt(s), end: todayStr }; }
+      case "year": return { start: `${now.getFullYear()}-01-01`, end: todayStr };
+      case "lastyear": { const y = now.getFullYear()-1; return { start: `${y}-01-01`, end: `${y}-12-31` }; }
+      case "custom": return { start: customStart||"2020-01-01", end: customEnd||todayStr };
+      default: return { start: "2020-01-01", end: todayStr };
+    }
+  }
+  
   const { start: pStart, end: pEnd } = getDateRange(analyticsPeriod);
-  const filteredBk = allBk.filter(b => b.date >= pStart && b.date <= pEnd);
+  const filteredBk = useMemo(() => allBk.filter(b => b.date >= pStart && b.date <= pEnd), [allBk, pStart, pEnd]);
   const analytics = useMemo(() => {
     const byMonth={}, byGender={M:0,F:0}, byCourtTotal={}, bySportTotal={},
           byHour={}, byDow={}, ageArr={}, bySource={admin:0,online:0};
@@ -1528,7 +1541,7 @@ function PixQR() {
 
 // ─── PASSWORD INPUT WITH SHOW/HIDE ───────────────────────────────────────────
 function PwdInput({label, v, set, ph}) {
-  const [show, setShow] = React.useState(false);
+  const [show, setShow] = useState(false);
   return (
     <div style={S.fg}>
       {label&&<label style={S.lbl}>{label}</label>}
