@@ -542,56 +542,46 @@ export default function App() {
     const hours = isWeekend
       ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
       : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
-    const dateLabel = `${DAYS_SHORT[dow]} ${d.getDate()}/${String(d.getMonth()+1).padStart(2,"0")}`;
-    let txt = `🏖️ *NA PRAIA — ${dateLabel}*
-
-`;
-    COURTS.forEach(ct => {
-      txt += `*${ct.name}*
-`;
-      hours.forEach(h => {
+    const dl = DAYS_SHORT[dow] + " " + d.getDate() + "/" + String(d.getMonth()+1).padStart(2,"0");
+    let txt = "NA PRAIA - " + dl + "\n\n";
+    COURTS.forEach(function(ct) {
+      txt += ct.name + "\n";
+      hours.forEach(function(h) {
         const b = isBooked(ct.id, date, h);
-        txt += `${h} — ${b ? "🔴 Ocupado" : "🟢 Livre"}
-`;
+        txt += h + " - " + (b ? "OCUPADO" : "LIVRE") + "\n";
       });
-      txt += "
-";
+      txt += "\n";
     });
-    txt += "📲 Reservas: napraia-arena.vercel.app";
-    navigator.clipboard.writeText(txt).then(() => toast_("Agenda do dia copiada! Cole no WhatsApp 📋"));
+    txt += "Reservas: napraia-arena.vercel.app";
+    navigator.clipboard.writeText(txt).then(function() { toast_("Agenda copiada! Cole no WhatsApp"); });
   }
 
   function copyWeekSchedule() {
-    const weekDates = getWeekDates(weekOffset);
-    let txt = `🏖️ *NA PRAIA — Agenda da Semana*
-
-`;
-    weekDates.forEach(d => {
+    const wd2 = getWeekDates(weekOffset);
+    let txt = "NA PRAIA - Agenda da Semana\n\n";
+    wd2.forEach(function(d) {
       const date = fmt(d);
       const dow = d.getDay();
       const isWeekend = dow === 0 || dow === 6;
       const hours = isWeekend
         ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
         : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
-      const dateLabel = `${DAYS_SHORT[dow]} ${d.getDate()}/${String(d.getMonth()+1).padStart(2,"0")}`;
-      txt += `📅 *${dateLabel}*
-`;
-      COURTS.forEach(ct => {
-        txt += `  *${ct.name}*
-`;
-        hours.forEach(h => {
+      const dl = DAYS_SHORT[dow] + " " + d.getDate() + "/" + String(d.getMonth()+1).padStart(2,"0");
+      txt += dl + "\n";
+      COURTS.forEach(function(ct) {
+        txt += "  " + ct.name + "\n";
+        hours.forEach(function(h) {
           const b = isBooked(ct.id, date, h);
-          txt += `  ${h} ${b?"🔴 Ocp":"🟢 Livre"}
-`;
+          txt += "  " + h + " " + (b ? "OCUPADO" : "LIVRE") + "\n";
         });
       });
-      txt += "
-";
+      txt += "\n";
     });
-    txt += "📲 napraia-arena.vercel.app";
-    navigator.clipboard.writeText(txt).then(() => toast_("Agenda da semana copiada! Cole no WhatsApp 📋"));
+    txt += "Reservas: napraia-arena.vercel.app";
+    navigator.clipboard.writeText(txt).then(function() { toast_("Agenda da semana copiada! Cole no WhatsApp"); });
   }
 
+  
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div style={S.app}>
