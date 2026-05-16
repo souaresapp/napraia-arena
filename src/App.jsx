@@ -3,7 +3,7 @@ import { useState, useMemo } from "react";
 
 // ─── SESSION (5 min timeout) ─────────────────────────────────────────────────
 const SESSION_KEY = "napraia_user";
-const SESSION_MS  = 5 * 60 * 1000;
+const SESSION_MS  = 24 * 60 * 60 * 1000; // 24 horas // 1 year = always logged in
 function saveSession(u) { try { localStorage.setItem(SESSION_KEY, JSON.stringify({u, ts:Date.now()})); } catch(e){} }
 function loadSession() { try { const r=localStorage.getItem(SESSION_KEY); if(!r) return null; const {u,ts}=JSON.parse(r); if(Date.now()-ts>SESSION_MS){localStorage.removeItem(SESSION_KEY);return null;} return u; } catch(e){return null;} }
 function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch(e){} }
@@ -157,6 +157,22 @@ export default function App() {
 
   // Payment edit modal
   const [editPayModal, setEditPayModal] = useState(null);
+
+  // ── Sponsors ─────────────────────────────────────────────────────────────────
+  const [sponsors, setSponsors] = useState([
+    // Example: { email, name, hoursPerWeek, dayType: 'weekend'|'weekday'|'any', active: true }
+  ]);
+
+  // ── Expenses ─────────────────────────────────────────────────────────────────
+  const [expenses, setExpenses] = useState([]);
+
+  // ── Partners (divisão societária) ────────────────────────────────────────────
+  const [partners, setPartners] = useState([
+    { name:"Carlos",  pct:40 },
+    { name:"Gleidson", pct:40 },
+    { name:"Dhionata", pct:20 },
+  ]);
+
   const [analyticsPeriod, setAnalyticsPeriod] = useState("30d");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd]     = useState("");
@@ -210,14 +226,34 @@ export default function App() {
     const { courtId,date,hour } = selSlot;
     const key = `${courtId}-${date}-${hour}`;
     const qualifies = me?.isRegular && isRegularSlot(me, date, hour);
+    // Check sponsor benefits
+    const sponsor = sponsors[me?.email];
+    let isSponsorCovered = false;
+    let sponsorAmount = 0;
+    if (sponsor) {
+      const dow = new Date(date).getDay();
+      const isWeekend = dow === 0 || dow === 6;
+      const dayOk = sponsor.dayType==="any" || (sponsor.dayType==="weekend"&&isWeekend) || (sponsor.dayType==="weekday"&&!isWeekend);
+      if (dayOk) {
+        // Count sponsor bookings this week
+        const weekStart = new Date(date); weekStart.setDate(weekStart.getDate()-weekStart.getDay());
+        const weekEnd   = new Date(weekStart); weekEnd.setDate(weekStart.getDate()+6);
+        const wStart = fmt(weekStart); const wEnd = fmt(weekEnd);
+        const usedHours = Object.values(bookings).filter(b=>b.email===me.email&&b.isSponsor&&b.date>=wStart&&b.date<=wEnd).length;
+        if (usedHours < sponsor.hoursPerWeek) { isSponsorCovered = true; sponsorAmount = 0; }
+        else { sponsorAmount = qualifies ? prices.regular : prices.common; }
+      }
+    }
+    const finalAmount = isSponsorCovered ? 0 : (qualifies ? prices.regular : prices.common);
     setBookings(b => ({ ...b, [key]: {
       id: Date.now().toString(), courtId, date, hour,
       name:me.name, email:me.email, phone:me.phone,
       birth:me.birth, gender:me.gender, city:me.city,
       sport:selSport, isRegular:!!me.isRegular, regularSlot:qualifies,
+      isSponsor: isSponsorCovered, sponsorName: sponsor?.name||"",
       byAdmin:false,
-      paid:false, paidLater:false,
-      amount: qualifies ? prices.regular : prices.common,
+      paid: isSponsorCovered, paidLater:false,
+      amount: finalAmount,
     }}));
     setBookStep(4);
   }
@@ -472,6 +508,88 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
     toast_("Planilha Excel gerada com sucesso!");
+  }
+
+
+  // ── Sponsor helpers ──────────────────────────────────────────────────────────
+  function getSponsorInfo(email) {
+    return sponsors.find(s => s.email === email && s.active);
+  }
+  function getSponsorUsedHours(email) {
+    const now = new Date();
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - now.getDay() + 1);
+    monday.setHours(0,0,0,0);
+    const mondayStr = fmt(monday);
+    return Object.values(bookings).filter(b =>
+      b.email === email && b.date >= mondayStr && b.sponsorBooking
+    ).length;
+  }
+  function isSponsorDayAllowed(sponsor, date) {
+    const dow = new Date(date).getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    if (sponsor.dayType === 'weekend') return isWeekend;
+    if (sponsor.dayType === 'weekday') return !isWeekend;
+    return true; // 'any'
+  }
+
+
+  // ── WhatsApp schedule helpers ─────────────────────────────────────────────────
+  function copyDaySchedule(date) {
+    const d = new Date(date);
+    const dow = d.getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    const hours = isWeekend
+      ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
+      : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
+    const dateLabel = `${DAYS_SHORT[dow]} ${d.getDate()}/${String(d.getMonth()+1).padStart(2,"0")}`;
+    let txt = `🏖️ *NA PRAIA — ${dateLabel}*
+
+`;
+    COURTS.forEach(ct => {
+      txt += `*${ct.name}*
+`;
+      hours.forEach(h => {
+        const b = isBooked(ct.id, date, h);
+        txt += `${h} — ${b ? "🔴 Ocupado" : "🟢 Livre"}
+`;
+      });
+      txt += "
+";
+    });
+    txt += "📲 Reservas: napraia-arena.vercel.app";
+    navigator.clipboard.writeText(txt).then(() => toast_("Agenda do dia copiada! Cole no WhatsApp 📋"));
+  }
+
+  function copyWeekSchedule() {
+    const weekDates = getWeekDates(weekOffset);
+    let txt = `🏖️ *NA PRAIA — Agenda da Semana*
+
+`;
+    weekDates.forEach(d => {
+      const date = fmt(d);
+      const dow = d.getDay();
+      const isWeekend = dow === 0 || dow === 6;
+      const hours = isWeekend
+        ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
+        : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
+      const dateLabel = `${DAYS_SHORT[dow]} ${d.getDate()}/${String(d.getMonth()+1).padStart(2,"0")}`;
+      txt += `📅 *${dateLabel}*
+`;
+      COURTS.forEach(ct => {
+        txt += `  *${ct.name}*
+`;
+        hours.forEach(h => {
+          const b = isBooked(ct.id, date, h);
+          txt += `  ${h} ${b?"🔴 Ocp":"🟢 Livre"}
+`;
+        });
+      });
+      txt += "
+";
+    });
+    txt += "📲 napraia-arena.vercel.app";
+    navigator.clipboard.writeText(txt).then(() => toast_("Agenda da semana copiada! Cole no WhatsApp 📋"));
   }
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
@@ -766,9 +884,14 @@ export default function App() {
                       <div>🏟 <strong>{bkC?.name}</strong></div>
                       <div>📅 {selSlot?.date} · ⏰ {selSlot?.hour}</div>
                       <div>{sportIcon(selSport)} {selSport}</div>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontWeight:900,fontSize:20,color:"#f97316"}}>💰 R$ {amt},00</span>
-                        {q&&<span style={{...S.chip,background:"#2a1800",color:"#f97316"}}>⭐ Desconto regular</span>}
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                        {bookings[`${selSlot?.courtId}-${selSlot?.date}-${selSlot?.hour}`]?.isSponsor ? (
+                          <><span style={{fontWeight:900,fontSize:20,color:"#22c55e"}}>✅ Cortesia Patrocinador</span>
+                          <span style={{...S.chip,background:"#132a1a",color:"#22c55e"}}>R$ 0,00 — benefício utilizado</span></>
+                        ) : (
+                          <><span style={{fontWeight:900,fontSize:20,color:"#f97316"}}>💰 R$ {amt},00</span>
+                          {q&&<span style={{...S.chip,background:"#2a1800",color:"#f97316"}}>⭐ Desconto regular</span>}</>
+                        )}
                       </div>
                     </div>
                     {/* Pix block */}
@@ -811,6 +934,16 @@ export default function App() {
             <div style={S.legend}>
               <span style={{color:"#22c55e"}}>● Livre — clique para reservar</span>
               <span style={{color:"#ef4444"}}>● Ocupado</span>
+            </div>
+            <div style={{display:"flex",gap:10,marginTop:16,flexWrap:"wrap"}}>
+              <button style={{...S.btnG,fontSize:13,display:"flex",alignItems:"center",gap:6}}
+                onClick={()=>copyDaySchedule(selDate)}>
+                📋 Copiar agenda do dia (WhatsApp)
+              </button>
+              <button style={{...S.btnG,fontSize:13,display:"flex",alignItems:"center",gap:6}}
+                onClick={copyWeekSchedule}>
+                📅 Copiar agenda da semana (WhatsApp)
+              </button>
             </div>
           </div>
         )}
@@ -883,7 +1016,7 @@ export default function App() {
                 </div>
 
                 <div style={S.adminTabs}>
-                  {[{id:"reservas",l:"📋 Reservas"},{id:"manual",l:"✍️ Reserva Manual"},{id:"precos",l:"💰 Preços"},{id:"gestao",l:"📊 Gestão"},{id:"heatmap",l:"🔥 Horários"},{id:"relatorios",l:"📄 Relatórios"},{id:"config",l:"⚙️ Config"}].map(t=>(
+                  {[{id:"reservas",l:"📋 Reservas"},{id:"manual",l:"✍️ Reserva Manual"},{id:"precos",l:"💰 Preços"},{id:"gestao",l:"📊 Gestão"},{id:"heatmap",l:"🔥 Horários"},{id:"relatorios",l:"📄 Relatórios"},{id:"patrocinadores",l:"🤝 Patrocinadores"},{id:"config",l:"⚙️ Config"}].map(t=>(
                     <button key={t.id}
                       style={{...S.adminTabBtn,...(adminTab===t.id?S.adminTabAct:{})}}
                       onClick={()=>setAdminTab(t.id)}>{t.l}</button>
@@ -996,7 +1129,7 @@ export default function App() {
                 )}
 
                 {/* ─── TAB PREÇOS ─── */}
-                {adminTab==="precos"&&(
+                {adminTab==="valores"&&(
                   <div style={{maxWidth:500}}>
                     <Section title="💰 Valores cobrados por hora">
                       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:16,marginBottom:16}}>
@@ -1027,6 +1160,129 @@ export default function App() {
                       </div>
                       <button style={{...S.btnO,marginTop:16}} onClick={savePrices}>Salvar Preços</button>
                     </Section>
+
+                    <Section title="👥 Divisão Societária">
+                      <div style={{...S.infoBox,marginBottom:16}}>
+                        Configure o nome e percentual de cada sócio. O total deve ser 100%.
+                        Total atual: <strong style={{color: partners.reduce((s,p)=>s+Number(p.pct),0)===100?"#22c55e":"#ef4444"}}>
+                          {partners.reduce((s,p)=>s+Number(p.pct),0)}%
+                        </strong>
+                      </div>
+                      {partners.map((p,i)=>(
+                        <div key={i} style={{display:"flex",gap:8,marginBottom:10,alignItems:"center"}}>
+                          <input style={{...S.inp,flex:2}} value={p.name}
+                            onChange={e=>setPartners(ps=>ps.map((x,j)=>j===i?{...x,name:e.target.value}:x))}
+                            placeholder="Nome do sócio"/>
+                          <input style={{...S.inp,flex:1,textAlign:"center"}} type="number" min="0" max="100"
+                            value={p.pct}
+                            onChange={e=>setPartners(ps=>ps.map((x,j)=>j===i?{...x,pct:Number(e.target.value)}:x))}/>
+                          <span style={{color:"#888",fontSize:14}}>%</span>
+                          <button style={{...S.aBlue,fontSize:12}} onClick={()=>setPartners(ps=>ps.filter((_,j)=>j!==i))}>✕</button>
+                        </div>
+                      ))}
+                      <button style={{...S.btnG,fontSize:13,marginTop:4}}
+                        onClick={()=>setPartners(ps=>[...ps,{name:"",pct:0}])}>+ Adicionar sócio</button>
+                      <button style={{...S.btnO,fontSize:13,marginTop:8,marginLeft:8}}
+                        onClick={()=>toast_("Divisão societária salva!")}>Salvar</button>
+                    </Section>
+
+                  </div>
+                )}
+
+
+                {/* ─── TAB PATROCINADORES ─── */}
+                {adminTab==="patrocinadores"&&(
+                  <div style={{maxWidth:600}}>
+                    <Section title="🤝 Gerenciar Patrocinadores">
+                      <div style={{...S.infoBox,marginBottom:20}}>
+                        Patrocinadores têm horas gratuitas por semana. Ao ultrapassar o limite, cobra-se R$ {prices.common}/hora pela diferença.
+                      </div>
+                      {sponsors.map((sp,i)=>(
+                        <div key={i} style={{...S.bookCard,borderColor:"#a855f7",marginBottom:12}}>
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                            <F label="Nome" v={sp.name} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,name:e.target.value}:x))} ph="Nome"/>
+                            <F label="Email" type="email" v={sp.email} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,email:e.target.value}:x))} ph="email@exemplo.com"/>
+                          </div>
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr auto",gap:10,alignItems:"flex-end"}}>
+                            <div style={S.fg}>
+                              <label style={S.lbl}>Horas/semana gratuitas</label>
+                              <input type="number" min="1" max="20" style={S.inp} value={sp.hoursPerWeek||1}
+                                onChange={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,hoursPerWeek:Number(e.target.value)}:x))}/>
+                            </div>
+                            <div style={S.fg}>
+                              <label style={S.lbl}>Dias permitidos</label>
+                              <select style={{...S.inp,cursor:"pointer"}} value={sp.dayType||"any"}
+                                onChange={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,dayType:e.target.value}:x))}>
+                                <option value="any">Qualquer dia</option>
+                                <option value="weekday">Dias de semana</option>
+                                <option value="weekend">Final de semana</option>
+                              </select>
+                            </div>
+                            <div style={S.fg}>
+                              <label style={S.lbl}>Status</label>
+                              <button style={{...S.inp,cursor:"pointer",background:sp.active?"#14532d":"#2a1010",color:sp.active?"#22c55e":"#ef4444",border:`1px solid ${sp.active?"#22c55e":"#ef4444"}`}}
+                                onClick={()=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,active:!x.active}:x))}>
+                                {sp.active?"✓ Ativo":"✗ Inativo"}
+                              </button>
+                            </div>
+                            <button style={{...S.aBlue,fontSize:12,alignSelf:"flex-end",padding:"10px 12px"}}
+                              onClick={()=>setSponsors(ss=>ss.filter((_,j)=>j!==i))}>✕</button>
+                          </div>
+                        </div>
+                      ))}
+                      <button style={{...S.btnO,marginTop:8}}
+                        onClick={()=>setSponsors(ss=>[...ss,{name:"",email:"",hoursPerWeek:2,dayType:"any",active:true}])}>
+                        + Adicionar Patrocinador
+                      </button>
+                    </Section>
+                  </div>
+                )}
+
+                {/* ─── TAB DESPESAS ─── */}
+                {adminTab==="despesas"&&(
+                  <div style={{maxWidth:700}}>
+                    <Section title="💸 Registrar Despesa">
+                      {(()=>{
+                        const [expForm, setExpForm] = [
+                          {date:fmt(new Date()),hour:"",material:"",motivo:"",quemPagou:"",valor:""},
+                          ()=>{}
+                        ];
+                        return null;
+                      })()}
+                      <ExpenseForm expenses={expenses} setExpenses={setExpenses} toast_={toast_}/>
+                    </Section>
+                    <Section title="📋 Histórico de Despesas">
+                      {expenses.length===0 && <div style={S.infoBox}>Nenhuma despesa registrada ainda.</div>}
+                      <div style={{maxHeight:400,overflowY:"auto"}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                          {expenses.length>0&&<thead><tr style={{background:"#1a1a1a"}}>
+                            {["Data","Hora","Material","Motivo","Quem Pagou","Valor",""].map(h=>(
+                              <th key={h} style={{padding:"8px 10px",textAlign:"left",color:"#888",fontWeight:600,borderBottom:"1px solid #2a2a2a"}}>{h}</th>
+                            ))}
+                          </tr></thead>}
+                          <tbody>
+                            {expenses.map((e,i)=>(
+                              <tr key={i} style={{borderBottom:"1px solid #1a1a1a"}}>
+                                <td style={{padding:"7px 10px",color:"#ccc"}}>{e.date}</td>
+                                <td style={{padding:"7px 10px",color:"#ccc"}}>{e.hour}</td>
+                                <td style={{padding:"7px 10px",color:"#fff"}}>{e.material}</td>
+                                <td style={{padding:"7px 10px",color:"#888"}}>{e.motivo}</td>
+                                <td style={{padding:"7px 10px",color:"#ccc"}}>{e.quemPagou}</td>
+                                <td style={{padding:"7px 10px",color:"#ef4444",fontWeight:700}}>R$ {e.valor}</td>
+                                <td style={{padding:"7px 10px"}}>
+                                  <button style={{...S.aBlue,fontSize:10}} onClick={()=>setExpenses(es=>es.filter((_,j)=>j!==i))}>✕</button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {expenses.length>0&&(
+                        <div style={{marginTop:12,color:"#f97316",fontWeight:700}}>
+                          Total despesas: R$ {expenses.reduce((s,e)=>s+Number(e.valor||0),0).toLocaleString("pt-BR")}
+                        </div>
+                      )}
+                    </Section>
                   </div>
                 )}
 
@@ -1052,6 +1308,49 @@ export default function App() {
                         <KPI icon="📱" label="Online" v={analytics.bySource.online}/>
                       </div>;
                     })()}
+
+
+                    <Section title="💼 Receitas × Despesas × Lucro">
+                      {(()=>{
+                        const totalRec = filteredBk.filter(b=>b.paid||b.paidLater).reduce((s,b)=>s+b.amount,0);
+                        const totalDes = expenses.reduce((s,e)=>s+Number(e.valor||0),0);
+                        const lucro    = totalRec - totalDes;
+                        const lucroP   = totalRec>0?Math.round(lucro/totalRec*100):0;
+                        return (
+                          <div>
+                            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginBottom:20}}>
+                              <div style={{...S.kpiCard,borderColor:"#22c55e",border:"1px solid #22c55e"}}>
+                                <div style={{fontSize:18}}>💚</div>
+                                <div style={{fontWeight:900,fontSize:20,color:"#22c55e"}}>R$ {totalRec.toLocaleString("pt-BR")}</div>
+                                <div style={{color:"#888",fontSize:11}}>Receita</div>
+                              </div>
+                              <div style={{...S.kpiCard,borderColor:"#ef4444",border:"1px solid #ef4444"}}>
+                                <div style={{fontSize:18}}>💸</div>
+                                <div style={{fontWeight:900,fontSize:20,color:"#ef4444"}}>R$ {totalDes.toLocaleString("pt-BR")}</div>
+                                <div style={{color:"#888",fontSize:11}}>Despesas</div>
+                              </div>
+                              <div style={{...S.kpiCard,borderColor:lucro>=0?"#f97316":"#ef4444",border:`1px solid ${lucro>=0?"#f97316":"#ef4444"}`}}>
+                                <div style={{fontSize:18}}>{lucro>=0?"📈":"📉"}</div>
+                                <div style={{fontWeight:900,fontSize:20,color:lucro>=0?"#f97316":"#ef4444"}}>R$ {lucro.toLocaleString("pt-BR")}</div>
+                                <div style={{color:"#888",fontSize:11}}>Lucro ({lucroP}%)</div>
+                              </div>
+                            </div>
+                            <div style={{fontWeight:700,color:"#fff",marginBottom:10}}>Divisão Societária</div>
+                            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                              {partners.map((p,i)=>(
+                                <div key={i} style={{...S.pieCard,flex:1,minWidth:120,textAlign:"center"}}>
+                                  <div style={{fontWeight:700,color:"#f97316",marginBottom:4}}>{p.name}</div>
+                                  <div style={{color:"#888",fontSize:12}}>{p.pct}%</div>
+                                  <div style={{fontWeight:800,fontSize:16,color:"#fff",marginTop:4}}>
+                                    R$ {Math.round(lucro*p.pct/100).toLocaleString("pt-BR")}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </Section>
 
                     <Section title="📈 Faturamento por Mês">
                       <Bar data={sortedMo.map(mk=>({label:analytics.byMonth[mk].label.slice(0,6),value:analytics.byMonth[mk].revenue}))} color="#f97316" unit="R$"/>
@@ -1273,38 +1572,111 @@ export default function App() {
                     </Section>
 
                     <Section title="✏️ Editar Status de Pagamento">
-                      <p style={{color:"#888",fontSize:13,marginBottom:14}}>
-                        Clique no status de qualquer reserva para editar. Útil para corrigir erros ou registrar pagamentos manuais.
-                      </p>
-                      <div style={{maxHeight:400,overflowY:"auto"}}>
-                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                          <thead>
-                            <tr style={{background:"#1a1a1a"}}>
-                              {["Data","Horário","Nome","Valor","Status","Ação"].map(h=>(
-                                <th key={h} style={{padding:"8px 10px",textAlign:"left",color:"#888",fontWeight:600,borderBottom:"1px solid #2a2a2a"}}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date)).map(([key,b])=>{
-                              const status = b.paid?"✅ Pago":b.paidLater?"⏳ Pago depois":b.payError?"❌ Erro":"⚠️ Pendente";
-                              const statusColor = b.paid?"#22c55e":b.paidLater?"#60a5fa":b.payError?"#ef4444":"#f59e0b";
-                              return (
-                                <tr key={key} style={{borderBottom:"1px solid #1a1a1a"}}>
-                                  <td style={{padding:"7px 10px",color:"#ccc"}}>{b.date}</td>
-                                  <td style={{padding:"7px 10px",color:"#ccc"}}>{b.hour}</td>
-                                  <td style={{padding:"7px 10px",color:"#fff",fontWeight:600}}>{b.name}</td>
-                                  <td style={{padding:"7px 10px",color:"#f97316"}}>R$ {b.amount}</td>
-                                  <td style={{padding:"7px 10px",color:statusColor,fontWeight:600}}>{status}</td>
-                                  <td style={{padding:"7px 10px"}}>
-                                    <button style={{...S.aBlue,fontSize:11}} onClick={()=>setEditPayModal(key)}>✏️ Editar</button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                      <PaymentEditor bookings={bookings} setEditPayModal={setEditPayModal} S={S}/>
+                    </Section>
+  
+                    </Section>
+                  </div>
+                )}
+
+
+                {/* ─── TAB PATROCINADORES ─── */}
+                {adminTab==="patrocinadores"&&(
+                  <div style={{maxWidth:600}}>
+                    <Section title="🤝 Cadastrar Patrocinador">
+                      <div style={{...S.infoBox,marginBottom:16}}>
+                        Patrocinadores recebem horas gratuitas por semana. Se ultrapassar o limite, cobra-se a diferença automaticamente.
                       </div>
+                      <F label="Email do patrocinador *" type="email" v={sponsorForm.email} set={e=>setSponsorForm(f=>({...f,email:e.target.value}))} ph="email@patrocinador.com"/>
+                      <F label="Nome / Empresa *" v={sponsorForm.name} set={e=>setSponsorForm(f=>({...f,name:e.target.value}))} ph="Nome do patrocinador"/>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+                        <div style={S.fg}>
+                          <label style={S.lbl}>Horas gratuitas por semana</label>
+                          <select style={{...S.inp,cursor:"pointer"}} value={sponsorForm.hoursPerWeek}
+                            onChange={e=>setSponsorForm(f=>({...f,hoursPerWeek:Number(e.target.value)}))}>
+                            {[1,2,3,4,5,6,7,8,10,12].map(n=><option key={n} value={n}>{n}h/semana</option>)}
+                          </select>
+                        </div>
+                        <div style={S.fg}>
+                          <label style={S.lbl}>Dias permitidos</label>
+                          <select style={{...S.inp,cursor:"pointer"}} value={sponsorForm.dayType}
+                            onChange={e=>setSponsorForm(f=>({...f,dayType:e.target.value}))}>
+                            <option value="any">Qualquer dia</option>
+                            <option value="weekend">Somente final de semana</option>
+                            <option value="weekday">Somente dias de semana</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div style={S.fg}>
+                        <label style={S.lbl}>Categoria</label>
+                        <div style={{display:"flex",gap:8}}>
+                          {[{v:"bronze",l:"🥉 Bronze"},{v:"prata",l:"🥈 Prata"},{v:"ouro",l:"🥇 Ouro"}].map(({v,l})=>(
+                            <button key={v} style={{flex:1,background:sponsorForm.category===v?"#f97316":"#1a1a1a",
+                              color:sponsorForm.category===v?"#fff":"#888",border:`1px solid ${sponsorForm.category===v?"#f97316":"#2a2a2a"}`,
+                              borderRadius:8,padding:"10px 0",cursor:"pointer",fontFamily:"inherit",fontWeight:700}}
+                              onClick={()=>setSponsorForm(f=>({...f,category:v}))}>{l}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <button style={{...S.btnO,marginTop:8}} onClick={()=>{
+                        if(!sponsorForm.email.includes("@")||!sponsorForm.name){toast_("Preencha email e nome","error");return;}
+                        setSponsors(p=>({...p,[sponsorForm.email]:{...sponsorForm}}));
+                        setSponsorMsg(`✅ ${sponsorForm.name} cadastrado como patrocinador!`);
+                        setSponsorForm({email:"",name:"",hoursPerWeek:2,dayType:"any",category:"bronze"});
+                        setTimeout(()=>setSponsorMsg(""),4000);
+                      }}>Cadastrar Patrocinador</button>
+                      {sponsorMsg&&<div style={{...S.infoBox,marginTop:12,borderColor:"#22c55e",color:"#22c55e"}}>{sponsorMsg}</div>}
+                    </Section>
+
+                    {Object.keys(sponsors).length>0&&(
+                      <Section title="📋 Patrocinadores Ativos">
+                        {Object.entries(sponsors).map(([email,sp])=>(
+                          <div key={email} style={{...S.bookCard,borderColor:sp.category==="ouro"?"#f59e0b":sp.category==="prata"?"#94a3b8":"#cd7c32",marginBottom:10}}>
+                            <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                              <div>
+                                <div style={{fontWeight:800,color:"#fff",fontSize:15}}>
+                                  {sp.category==="ouro"?"🥇":sp.category==="prata"?"🥈":"🥉"} {sp.name}
+                                </div>
+                                <div style={{color:"#888",fontSize:13,marginTop:2}}>{email}</div>
+                                <div style={{display:"flex",gap:8,marginTop:6,flexWrap:"wrap"}}>
+                                  <span style={{...S.chip,background:"#1a1a1a",color:"#f97316"}}>{sp.hoursPerWeek}h/semana</span>
+                                  <span style={{...S.chip,background:"#1a1a1a",color:"#888"}}>{sp.dayType==="any"?"Qualquer dia":sp.dayType==="weekend"?"Final de semana":"Dias de semana"}</span>
+                                </div>
+                              </div>
+                              <button style={{background:"#2a1010",border:"1px solid #6b2020",color:"#ef4444",borderRadius:8,padding:"6px 12px",cursor:"pointer",fontSize:12}}
+                                onClick={()=>{const s={...sponsors};delete s[email];setSponsors(s);toast_("Patrocinador removido");}}>
+                                Remover
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </Section>
+                    )}
+
+                    <Section title="📊 Uso de Benefícios esta semana">
+                      {Object.entries(sponsors).length===0
+                        ? <div style={S.infoBox}>Nenhum patrocinador cadastrado ainda.</div>
+                        : Object.entries(sponsors).map(([email,sp])=>{
+                          const now=new Date(); const ws=new Date(now); ws.setDate(ws.getDate()-ws.getDay());
+                          const we=new Date(ws); we.setDate(ws.getDate()+6);
+                          const used=Object.values(bookings).filter(b=>b.email===email&&b.isSponsor&&b.date>=fmt(ws)&&b.date<=fmt(we)).length;
+                          const pct=Math.min(used/sp.hoursPerWeek*100,100);
+                          return (
+                            <div key={email} style={{...S.bookCard,marginBottom:10}}>
+                              <div style={{fontWeight:700,color:"#fff",marginBottom:8}}>{sp.name}</div>
+                              <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                                <span style={{color:"#888",fontSize:13}}>{used}h usadas de {sp.hoursPerWeek}h</span>
+                                <span style={{color:used>=sp.hoursPerWeek?"#ef4444":"#22c55e",fontWeight:700,fontSize:13}}>
+                                  {used>=sp.hoursPerWeek?"⚠️ Limite atingido":`${sp.hoursPerWeek-used}h restantes`}
+                                </span>
+                              </div>
+                              <div style={{background:"#1a1a1a",borderRadius:4,height:8,overflow:"hidden"}}>
+                                <div style={{height:"100%",background:pct>=100?"#ef4444":"#22c55e",width:`${pct}%`,transition:"width 0.5s"}}/>
+                              </div>
+                            </div>
+                          );
+                        })
+                      }
                     </Section>
                   </div>
                 )}
@@ -1503,6 +1875,102 @@ function PixQR() {
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
 
+
+
+function PaymentEditor({bookings, setEditPayModal, S}) {
+  const [filter, setFilter] = useState("all"); // all | pending
+  const [pStart, setPStart] = useState("");
+  const [pEnd, setPEnd]     = useState("");
+  const allBk = Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date));
+  const filtered = allBk.filter(([,b])=>{
+    if(filter==="pending" && (b.paid||b.paidLater)) return false;
+    if(pStart && b.date < pStart) return false;
+    if(pEnd   && b.date > pEnd)   return false;
+    return true;
+  });
+  return (
+    <div>
+      <p style={{color:"#888",fontSize:13,marginBottom:12}}>
+        Clique em ✏️ para editar o status. Use os filtros para encontrar pagamentos pendentes.
+      </p>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
+        <button onClick={()=>setFilter("all")}
+          style={{background:filter==="all"?"#f97316":"#1a1a1a",color:filter==="all"?"#fff":"#888",border:`1px solid ${filter==="all"?"#f97316":"#2a2a2a"}`,borderRadius:8,padding:"6px 14px",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700}}>
+          Mostrar Tudo
+        </button>
+        <button onClick={()=>setFilter("pending")}
+          style={{background:filter==="pending"?"#ef4444":"#1a1a1a",color:filter==="pending"?"#fff":"#888",border:`1px solid ${filter==="pending"?"#ef4444":"#2a2a2a"}`,borderRadius:8,padding:"6px 14px",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700}}>
+          ⚠️ Só Pendentes
+        </button>
+        <input type="date" style={{...S.inp,width:"auto",fontSize:12}} placeholder="De" value={pStart} onChange={e=>setPStart(e.target.value)}/>
+        <span style={{color:"#666"}}>até</span>
+        <input type="date" style={{...S.inp,width:"auto",fontSize:12}} placeholder="Até" value={pEnd} onChange={e=>setPEnd(e.target.value)}/>
+        <span style={{color:"#666",fontSize:12}}>{filtered.length} registro(s)</span>
+      </div>
+      <div style={{maxHeight:420,overflowY:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead>
+            <tr style={{background:"#1a1a1a"}}>
+              {["Data","Início","Duração","Nome","Quadra","Esporte","Valor","Status",""].map(h=>(
+                <th key={h} style={{padding:"7px 8px",textAlign:"left",color:"#888",fontWeight:600,borderBottom:"1px solid #2a2a2a",whiteSpace:"nowrap"}}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(([key,b])=>{
+              const court = [{id:"sicoob",name:"Sicoob"},{id:"tropical",name:"Tropical Net"}].find(x=>x.id===b.courtId);
+              const status = b.paid?"✅ Pago":b.paidLater?"⏳ Depois":b.payError?"❌ Erro":"⚠️ Pend.";
+              const statusColor = b.paid?"#22c55e":b.paidLater?"#60a5fa":b.payError?"#ef4444":"#f59e0b";
+              return (
+                <tr key={key} style={{borderBottom:"1px solid #141414"}}>
+                  <td style={{padding:"6px 8px",color:"#ccc",whiteSpace:"nowrap"}}>{b.date}</td>
+                  <td style={{padding:"6px 8px",color:"#ccc"}}>{b.hour}</td>
+                  <td style={{padding:"6px 8px",color:"#888"}}>1h</td>
+                  <td style={{padding:"6px 8px",color:"#fff",fontWeight:600,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{b.name}</td>
+                  <td style={{padding:"6px 8px",color:"#aaa",whiteSpace:"nowrap"}}>{court?.name}</td>
+                  <td style={{padding:"6px 8px",color:"#aaa"}}>{b.sport}</td>
+                  <td style={{padding:"6px 8px",color:"#f97316",fontWeight:700}}>R${b.amount}</td>
+                  <td style={{padding:"6px 8px",color:statusColor,fontWeight:700,whiteSpace:"nowrap"}}>{status}</td>
+                  <td style={{padding:"6px 8px"}}>
+                    <button style={{background:"#1a2a4a",border:"none",color:"#60a5fa",borderRadius:6,padding:"3px 8px",cursor:"pointer",fontSize:11}}
+                      onClick={()=>setEditPayModal(key)}>✏️</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length===0&&<div style={{padding:20,color:"#555",textAlign:"center"}}>Nenhuma reserva encontrada.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ExpenseForm({expenses, setExpenses, toast_}) {
+  const [form, setForm] = useState({date:fmt(new Date()),hour:"",material:"",motivo:"",quemPagou:"",valor:""});
+  function save() {
+    if(!form.date||!form.material||!form.valor){toast_("Preencha data, material e valor","error");return;}
+    setExpenses(es=>[...es,{...form}]);
+    setForm({date:fmt(new Date()),hour:"",material:"",motivo:"",quemPagou:"",valor:""});
+    toast_("Despesa registrada!");
+  }
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:12}}>
+        <F label="Data *" type="date" v={form.date} set={e=>setForm(f=>({...f,date:e.target.value}))}/>
+        <F label="Hora" v={form.hour} set={e=>setForm(f=>({...f,hour:e.target.value}))} ph="ex: 14:00"/>
+        <F label="Valor R$ *" type="number" v={form.valor} set={e=>setForm(f=>({...f,valor:e.target.value}))} ph="0,00"/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+        <F label="Material/Item *" v={form.material} set={e=>setForm(f=>({...f,material:e.target.value}))} ph="ex: Rede de vôlei"/>
+        <F label="Motivo" v={form.motivo} set={e=>setForm(f=>({...f,motivo:e.target.value}))} ph="ex: Manutenção"/>
+      </div>
+      <F label="Quem pagou" v={form.quemPagou} set={e=>setForm(f=>({...f,quemPagou:e.target.value}))} ph="Nome de quem pagou"/>
+      <button style={{...S.btnO,marginTop:8}} onClick={save}>+ Registrar Despesa</button>
+    </div>
+  );
+}
+
 function PwdInput({label, v, set, ph}) {
   const [show, setShow] = useState(false);
   return (
@@ -1564,8 +2032,8 @@ function WeekNav({wd,sel,off,setOff,setSel,ac="#f97316"}) {
           return (
             <button key={i} disabled={past} onClick={()=>setSel(ds)}
               style={{...S.dBtn,...(sel===ds?{background:ac,color:"#fff",borderColor:ac}:{}),...(past?{opacity:.3,cursor:"not-allowed"}:{})}}>
-              <div style={{fontSize:9}}>{DAYS_SHORT[d.getDay()]}</div>
-              <div style={{fontWeight:700,fontSize:12}}>{String(d.getDate()).padStart(2,"0")}/{String(d.getMonth()+1).padStart(2,"0")}</div>
+                         <div style={{fontSize:10}}>{DAYS_SHORT[d.getDay()]}</div>
+              <div style={{fontWeight:800,fontSize:14}}>{d.getDate()}</div>
               {ds===today&&<div style={{fontSize:8,color:sel===ds?"#fff":ac}}>Hoje</div>}
             </button>
           );
