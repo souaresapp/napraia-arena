@@ -536,52 +536,66 @@ export default function App() {
 
   // ── WhatsApp schedule helpers ─────────────────────────────────────────────────
   function copyDaySchedule(date) {
-    const d = new Date(date);
-    const dow = d.getDay();
-    const isWeekend = dow === 0 || dow === 6;
-    const hours = isWeekend
-      ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
-      : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
-    const dl = DAYS_SHORT[dow] + " " + d.getDate() + "/" + String(d.getMonth()+1).padStart(2,"0");
-    let txt = "NA PRAIA - " + dl + "\n\n";
-    COURTS.forEach(function(ct) {
-      txt += ct.name + "\n";
-      hours.forEach(function(h) {
-        const b = isBooked(ct.id, date, h);
-        txt += h + " - " + (b ? "OCUPADO" : "LIVRE") + "\n";
+    try {
+      var d = new Date(date);
+      var dow = d.getDay();
+      var isWE = dow === 0 || dow === 6;
+      var hours = ALL_HOURS.filter(function(h) {
+        if (isWE) return h >= "06:00" && h <= "22:00";
+        return h >= "17:00" && h <= "21:00";
       });
-      txt += "\n";
-    });
-    txt += "Reservas: napraia-arena.vercel.app";
-    navigator.clipboard.writeText(txt).then(function() { toast_("Agenda copiada! Cole no WhatsApp"); });
-  }
-
-  function copyWeekSchedule() {
-    const wd2 = getWeekDates(weekOffset);
-    let txt = "NA PRAIA - Agenda da Semana\n\n";
-    wd2.forEach(function(d) {
-      const date = fmt(d);
-      const dow = d.getDay();
-      const isWeekend = dow === 0 || dow === 6;
-      const hours = isWeekend
-        ? ALL_HOURS.filter(h => h >= "06:00" && h <= "22:00")
-        : ALL_HOURS.filter(h => h >= "17:00" && h <= "21:00");
-      const dl = DAYS_SHORT[dow] + " " + d.getDate() + "/" + String(d.getMonth()+1).padStart(2,"0");
-      txt += dl + "\n";
+      var day = d.getDate();
+      var mon = String(d.getMonth()+1).padStart(2,"0");
+      var lines2 = [];
+      lines2.push("AGENDA " + DAYS_FULL[dow].toUpperCase() + " " + day + "/" + mon);
       COURTS.forEach(function(ct) {
-        txt += "  " + ct.name + "\n";
+        lines2.push("- " + ct.name);
         hours.forEach(function(h) {
-          const b = isBooked(ct.id, date, h);
-          txt += "  " + h + " " + (b ? "OCUPADO" : "LIVRE") + "\n";
+          var b = bookings[ct.id + "-" + date + "-" + h];
+          var name2 = b ? b.name.split(" ")[0] + " " + (b.sport==="Beach Tennis"?"BT":b.sport==="Futvolei"?"FV":"VB") : "";
+          lines2.push(h + " - " + name2);
         });
       });
-      txt += "\n";
-    });
-    txt += "Reservas: napraia-arena.vercel.app";
-    navigator.clipboard.writeText(txt).then(function() { toast_("Agenda da semana copiada! Cole no WhatsApp"); });
+      navigator.clipboard.writeText(lines2.join("\n"))
+        .then(function() { toast_("Agenda do dia copiada! Cole no WhatsApp"); })
+        .catch(function() { toast_("Erro ao copiar","error"); });
+    } catch(e) { toast_("Erro ao copiar","error"); }
   }
 
-  
+  function copyWeekSchedule(wkOffset) {
+    try {
+      var wd = getWeekDates(wkOffset);
+      var lines2 = [];
+      var d0 = wd[0], d6 = wd[6];
+      var from = d0.getDate() + "/" + String(d0.getMonth()+1).padStart(2,"0");
+      var to   = d6.getDate() + "/" + String(d6.getMonth()+1).padStart(2,"0");
+      lines2.push("AGENDA DE " + from + " A " + to);
+      wd.forEach(function(d) {
+        var date = fmt(d);
+        var dow = d.getDay();
+        var isWE = dow === 0 || dow === 6;
+        var hours = ALL_HOURS.filter(function(h) {
+          if (isWE) return h >= "06:00" && h <= "22:00";
+          return h >= "17:00" && h <= "21:00";
+        });
+        lines2.push("");
+        lines2.push(DAYS_FULL[dow].toUpperCase() + " " + d.getDate() + "/" + String(d.getMonth()+1).padStart(2,"0"));
+        COURTS.forEach(function(ct) {
+          lines2.push("- " + ct.name);
+          hours.forEach(function(h) {
+            var b = bookings[ct.id + "-" + date + "-" + h];
+            var name2 = b ? b.name.split(" ")[0] + " " + (b.sport==="Beach Tennis"?"BT":b.sport==="Futvolei"?"FV":"VB") : "";
+            lines2.push(h + " - " + name2);
+          });
+        });
+      });
+      navigator.clipboard.writeText(lines2.join("\n"))
+        .then(function() { toast_("Agenda da semana copiada! Cole no WhatsApp"); })
+        .catch(function() { toast_("Erro ao copiar","error"); });
+    } catch(e) { toast_("Erro ao copiar","error"); }
+  }
+
+
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div style={S.app}>
@@ -926,13 +940,13 @@ export default function App() {
               <span style={{color:"#ef4444"}}>● Ocupado</span>
             </div>
             <div style={{display:"flex",gap:10,marginTop:16,flexWrap:"wrap"}}>
-              <button style={{...S.btnG,fontSize:13,display:"flex",alignItems:"center",gap:6}}
+              <button style={{...S.btnG,fontSize:13}}
                 onClick={()=>copyDaySchedule(selDate)}>
-                📋 Copiar agenda do dia (WhatsApp)
+                📋 Copiar dia para WhatsApp
               </button>
-              <button style={{...S.btnG,fontSize:13,display:"flex",alignItems:"center",gap:6}}
-                onClick={copyWeekSchedule}>
-                📅 Copiar agenda da semana (WhatsApp)
+              <button style={{...S.btnG,fontSize:13}}
+                onClick={()=>copyWeekSchedule(weekOffset)}>
+                📅 Copiar semana para WhatsApp
               </button>
             </div>
           </div>
@@ -1563,8 +1577,6 @@ export default function App() {
 
                     <Section title="✏️ Editar Status de Pagamento">
                       <PaymentEditor bookings={bookings} setEditPayModal={setEditPayModal} S={S}/>
-                    </Section>
-  
                     </Section>
                   </div>
                 )}
