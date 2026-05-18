@@ -178,6 +178,9 @@ export default function App() {
   const [customEnd, setCustomEnd]     = useState("");
  // booking key
   const [reportGenerated, setReportGenerated] = useState(null);
+  const [reportPeriod, setReportPeriod]   = useState("year");
+  const [reportStart, setReportStart]     = useState("");
+  const [reportEnd, setReportEnd]         = useState("");
 
   // Admin manual booking form
   const [manForm, setManForm] = useState({
@@ -376,104 +379,155 @@ export default function App() {
   function generatePDF() {
     const now = new Date();
     const ts  = now.toLocaleString("pt-BR");
-    const bkList = Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date));
-    const totalPaid   = allBk.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
-    const totalLater  = allBk.filter(b=>b.paidLater).reduce((s,b)=>s+b.amount,0);
-    const totalUnpaid = allBk.filter(b=>!b.paid&&!b.paidLater).reduce((s,b)=>s+b.amount,0);
 
-    const rows = bkList.map(([,b])=>{
-      const c = COURTS.find(x=>x.id===b.courtId);
+    // Determine date range for report
+    var rStart, rEnd, rLabel;
+    const yr = now.getFullYear();
+    if (reportPeriod === "year") {
+      rStart = yr + "-01-01"; rEnd = yr + "-12-31";
+      rLabel = "Ano " + yr;
+    } else if (reportPeriod === "lastyear") {
+      rStart = (yr-1) + "-01-01"; rEnd = (yr-1) + "-12-31";
+      rLabel = "Ano " + (yr-1);
+    } else if (reportPeriod === "month") {
+      var m = String(now.getMonth()+1).padStart(2,"0");
+      rStart = yr + "-" + m + "-01"; rEnd = fmt(now);
+      rLabel = MONTHS[now.getMonth()] + "/" + yr;
+    } else if (reportPeriod === "30d") {
+      var s30 = new Date(now); s30.setDate(s30.getDate()-30);
+      rStart = fmt(s30); rEnd = fmt(now);
+      rLabel = "Últimos 30 dias";
+    } else {
+      rStart = reportStart || (yr + "-01-01");
+      rEnd   = reportEnd   || fmt(now);
+      rLabel = rStart + " a " + rEnd;
+    }
+
+    const repBk = Object.values(bookings).filter(b => b.date >= rStart && b.date <= rEnd)
+      .sort((a,b) => a.date.localeCompare(b.date));
+
+    const totalPaid   = repBk.filter(b=>b.paid).reduce((s,b)=>s+b.amount,0);
+    const totalLater  = repBk.filter(b=>b.paidLater).reduce((s,b)=>s+b.amount,0);
+    const totalUnpaid = repBk.filter(b=>!b.paid&&!b.paidLater).reduce((s,b)=>s+b.amount,0);
+    const totalDespesas = expenses.reduce((s,e)=>s+Number(e.valor||0),0);
+    const lucro = totalPaid + totalLater - totalDespesas;
+
+    // Monthly breakdown
+    const byMonthMap = {};
+    repBk.forEach(b => {
+      const d = new Date(b.date);
+      const mk = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+      const ml = MONTHS[d.getMonth()] + "/" + d.getFullYear();
+      if (!byMonthMap[mk]) byMonthMap[mk] = {label:ml, count:0, revenue:0, paid:0, pending:0};
+      byMonthMap[mk].count++;
+      if (b.paid||b.paidLater) byMonthMap[mk].revenue += b.amount;
+      if (b.paid) byMonthMap[mk].paid++;
+      else byMonthMap[mk].pending++;
+    });
+
+    const monthRows = Object.keys(byMonthMap).sort().map(mk => {
+      const m = byMonthMap[mk];
+      return "<tr><td style=\"padding:6px 10px\">" + m.label + "</td>" +
+        "<td style=\"padding:6px 10px;text-align:center\">" + m.count + "</td>" +
+        "<td style=\"padding:6px 10px;text-align:center;color:#16a34a\">" + m.paid + "</td>" +
+        "<td style=\"padding:6px 10px;text-align:center;color:#d97706\">" + m.pending + "</td>" +
+        "<td style=\"padding:6px 10px;text-align:right;font-weight:700\">R$ " + m.revenue.toLocaleString("pt-BR") + "</td></tr>";
+    }).join("");
+
+    // Sport distribution
+    const sportRows = SPORTS.map(s => {
+      const cnt = repBk.filter(b=>b.sport===s).length;
+      const pct = repBk.length > 0 ? Math.round(cnt/repBk.length*100) : 0;
+      return "<tr><td style=\"padding:5px 10px\">" + s + "</td>" +
+        "<td style=\"padding:5px 10px;text-align:right\">" + cnt + "</td>" +
+        "<td style=\"padding:5px 10px;text-align:right\">" + pct + "%</td></tr>";
+    }).join("");
+
+    // Court performance
+    const courtRows = COURTS.map(ct => {
+      const cnt = repBk.filter(b=>b.courtId===ct.id).length;
+      const rev = repBk.filter(b=>b.courtId===ct.id&&(b.paid||b.paidLater)).reduce((s,b)=>s+b.amount,0);
+      return "<tr><td style=\"padding:5px 10px\">" + ct.name + "</td>" +
+        "<td style=\"padding:5px 10px;text-align:right\">" + cnt + "</td>" +
+        "<td style=\"padding:5px 10px;text-align:right\">R$ " + rev.toLocaleString("pt-BR") + "</td></tr>";
+    }).join("");
+
+    // All bookings table
+    const bkRows = repBk.map(b => {
+      const ct = COURTS.find(x=>x.id===b.courtId);
       const status = b.paid?"✓ Pago":b.paidLater?"⏳ Pago depois":b.payError?"❌ Erro":"⚠ Pendente";
-      return `<tr style="border-bottom:1px solid #eee">
-        <td style="padding:6px 10px">${b.date}</td>
-        <td style="padding:6px 10px">${b.hour}</td>
-        <td style="padding:6px 10px">${b.name}</td>
-        <td style="padding:6px 10px">${c?.name||""}</td>
-        <td style="padding:6px 10px">${b.sport}</td>
-        <td style="padding:6px 10px;text-align:right">R$ ${b.amount},00</td>
-        <td style="padding:6px 10px;color:${b.paid?"#16a34a":b.paidLater?"#2563eb":b.payError?"#dc2626":"#d97706"}">${status}</td>
-        <td style="padding:6px 10px;font-size:11px">${b.byAdmin?"🛠 Gestor":"📱 Online"}</td>
-      </tr>`;
+      const statusColor = b.paid?"#16a34a":b.paidLater?"#2563eb":b.payError?"#dc2626":"#d97706";
+      return "<tr style=\"border-bottom:1px solid #eee\">" +
+        "<td style=\"padding:5px 8px\">" + b.date + "</td>" +
+        "<td style=\"padding:5px 8px\">" + b.hour + "</td>" +
+        "<td style=\"padding:5px 8px\">" + b.name + "</td>" +
+        "<td style=\"padding:5px 8px\">" + (ct?ct.name:"") + "</td>" +
+        "<td style=\"padding:5px 8px\">" + b.sport + "</td>" +
+        "<td style=\"padding:5px 8px;text-align:right\">R$ " + b.amount + "</td>" +
+        "<td style=\"padding:5px 8px;color:" + statusColor + ";font-weight:600\">" + status + "</td>" +
+        "<td style=\"padding:5px 8px;font-size:10px\">" + (b.byAdmin?"Gestor":"Online") + "</td></tr>";
     }).join("");
 
-    const sportDist = SPORTS.map(s=>{
-      const cnt = allBk.filter(b=>b.sport===s).length;
-      const pct = totalBk>0?Math.round(cnt/totalBk*100):0;
-      return `<tr><td style="padding:5px 10px">${s}</td><td style="padding:5px 10px;text-align:right">${cnt}</td><td style="padding:5px 10px;text-align:right">${pct}%</td></tr>`;
+    // Partner division
+    const partnerRows = partners.map(p => {
+      const val = Math.round(lucro * p.pct / 100);
+      return "<tr><td style=\"padding:5px 10px\">" + p.name + "</td>" +
+        "<td style=\"padding:5px 10px;text-align:right\">" + p.pct + "%</td>" +
+        "<td style=\"padding:5px 10px;text-align:right;font-weight:700\">R$ " + val.toLocaleString("pt-BR") + "</td></tr>";
     }).join("");
 
-    const courtDist = COURTS.map(c=>{
-      const cnt = allBk.filter(b=>b.courtId===c.id).length;
-      const rev = allBk.filter(b=>b.courtId===c.id&&(b.paid||b.paidLater)).reduce((s,b)=>s+b.amount,0);
-      return `<tr><td style="padding:5px 10px">${c.name}</td><td style="padding:5px 10px;text-align:right">${cnt}</td><td style="padding:5px 10px;text-align:right">R$ ${rev.toLocaleString("pt-BR")}</td></tr>`;
-    }).join("");
+    const html = "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"UTF-8\">" +
+      "<title>Relatório Na Praia — " + rLabel + "</title>" +
+      "<style>body{font-family:Arial,sans-serif;color:#1a1a1a;margin:0;padding:28px;font-size:13px}" +
+      "h1{color:#f97316;font-size:24px;margin-bottom:2px}" +
+      "h2{font-size:14px;margin:20px 0 8px;border-bottom:2px solid #f97316;padding-bottom:3px}" +
+      ".sub{color:#888;font-size:12px;margin-bottom:20px}" +
+      ".kpi{display:inline-block;background:#f9f9f9;border:1px solid #eee;border-radius:8px;padding:12px 18px;margin:0 8px 8px 0;text-align:center;min-width:110px}" +
+      ".kv{font-size:20px;font-weight:900;color:#f97316}" +
+      ".kl{font-size:11px;color:#888;margin-top:2px}" +
+      "table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}" +
+      "thead tr{background:#f97316;color:#fff}" +
+      "thead th{padding:7px 8px;text-align:left}" +
+      "tbody tr:nth-child(even){background:#fafafa}" +
+      "@media print{body{padding:12px}}</style></head><body>" +
+      "<h1>Relatório de Gestão — Na Praia</h1>" +
+      "<div class=\"sub\">Arena Multi Esportiva · Dionísio - MG &nbsp;|&nbsp; Período: <strong>" + rLabel + "</strong> &nbsp;|&nbsp; Gerado em: " + ts + "</div>" +
 
-    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-    <title>Relatório Na Praia — ${ts}</title>
-    <style>
-      body{font-family:Arial,sans-serif;color:#1a1a1a;margin:0;padding:32px}
-      h1{color:#f97316;font-size:28px;margin-bottom:4px}
-      h2{color:#1a1a1a;font-size:16px;margin:24px 0 10px;border-bottom:2px solid #f97316;padding-bottom:4px}
-      .sub{color:#888;font-size:13px;margin-bottom:24px}
-      .kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
-      .kpi{background:#f9f9f9;border:1px solid #eee;border-radius:10px;padding:16px;text-align:center}
-      .kpi .v{font-size:24px;font-weight:900;color:#f97316}
-      .kpi .l{font-size:12px;color:#888;margin-top:4px}
-      table{width:100%;border-collapse:collapse;font-size:13px}
-      thead tr{background:#f97316;color:#fff}
-      thead th{padding:8px 10px;text-align:left}
-      tbody tr:nth-child(even){background:#fafafa}
-      .section{margin-bottom:32px}
-      .badge-paid{color:#16a34a;font-weight:700}
-      .badge-later{color:#2563eb;font-weight:700}
-      .badge-pend{color:#d97706;font-weight:700}
-      .badge-err{color:#dc2626;font-weight:700}
-      @media print{body{padding:16px}}
-    </style></head><body>
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
-      <div><h1>📊 Relatório de Gestão</h1>
-      <div class="sub">Na Praia — Arena Multi Esportiva · Dionísio - MG<br>Gerado em: ${ts}</div></div>
-    </div>
+      "<h2>Resumo Financeiro</h2>" +
+      "<div style=\"margin-bottom:16px\">" +
+      "<div class=\"kpi\"><div class=\"kv\">" + repBk.length + "</div><div class=\"kl\">Reservas</div></div>" +
+      "<div class=\"kpi\"><div class=\"kv\" style=\"color:#16a34a\">R$ " + totalPaid.toLocaleString("pt-BR") + "</div><div class=\"kl\">Recebido</div></div>" +
+      "<div class=\"kpi\"><div class=\"kv\" style=\"color:#2563eb\">R$ " + totalLater.toLocaleString("pt-BR") + "</div><div class=\"kl\">Pago depois</div></div>" +
+      "<div class=\"kpi\"><div class=\"kv\" style=\"color:#d97706\">R$ " + totalUnpaid.toLocaleString("pt-BR") + "</div><div class=\"kl\">Pendente</div></div>" +
+      "<div class=\"kpi\"><div class=\"kv\" style=\"color:#dc2626\">R$ " + totalDespesas.toLocaleString("pt-BR") + "</div><div class=\"kl\">Despesas</div></div>" +
+      "<div class=\"kpi\"><div class=\"kv\" style=\"color:" + (lucro>=0?"#16a34a":"#dc2626") + "\">R$ " + lucro.toLocaleString("pt-BR") + "</div><div class=\"kl\">Lucro</div></div>" +
+      "</div>" +
 
-    <h2>Resumo Financeiro</h2>
-    <div class="kpi-grid">
-      <div class="kpi"><div class="v">${totalBk}</div><div class="l">Total Reservas</div></div>
-      <div class="kpi"><div class="v" style="color:#16a34a">R$ ${totalPaid.toLocaleString("pt-BR")}</div><div class="l">Recebido (pago)</div></div>
-      <div class="kpi"><div class="v" style="color:#2563eb">R$ ${totalLater.toLocaleString("pt-BR")}</div><div class="l">A receber (pago depois)</div></div>
-      <div class="kpi"><div class="v" style="color:#d97706">R$ ${totalUnpaid.toLocaleString("pt-BR")}</div><div class="l">Pendente</div></div>
-    </div>
+      "<h2>Desempenho Mensal</h2>" +
+      "<table><thead><tr><th>Mês</th><th style=\"text-align:center\">Reservas</th><th style=\"text-align:center\">Pagas</th><th style=\"text-align:center\">Pendentes</th><th style=\"text-align:right\">Faturamento</th></tr></thead><tbody>" + monthRows + "</tbody></table>" +
 
-    <h2>Por Esporte</h2>
-    <div class="section"><table>
-      <thead><tr><th>Esporte</th><th style="text-align:right">Reservas</th><th style="text-align:right">%</th></tr></thead>
-      <tbody>${sportDist}</tbody>
-    </table></div>
+      "<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px\">" +
+      "<div><h2>Por Esporte</h2><table><thead><tr><th>Esporte</th><th style=\"text-align:right\">Qtd</th><th style=\"text-align:right\">%</th></tr></thead><tbody>" + sportRows + "</tbody></table></div>" +
+      "<div><h2>Por Quadra</h2><table><thead><tr><th>Quadra</th><th style=\"text-align:right\">Qtd</th><th style=\"text-align:right\">Faturamento</th></tr></thead><tbody>" + courtRows + "</tbody></table></div>" +
+      "</div>" +
 
-    <h2>Por Quadra</h2>
-    <div class="section"><table>
-      <thead><tr><th>Quadra</th><th style="text-align:right">Reservas</th><th style="text-align:right">Faturamento</th></tr></thead>
-      <tbody>${courtDist}</tbody>
-    </table></div>
+      "<h2>Divisão Societária (sobre o lucro)</h2>" +
+      "<table><thead><tr><th>Sócio</th><th style=\"text-align:right\">%</th><th style=\"text-align:right\">Valor</th></tr></thead><tbody>" + partnerRows + "</tbody></table>" +
 
-    <h2>Todas as Reservas — Controle de Pagamento</h2>
-    <div class="section"><table>
-      <thead><tr><th>Data</th><th>Horário</th><th>Nome</th><th>Quadra</th><th>Esporte</th><th style="text-align:right">Valor</th><th>Status</th><th>Origem</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
+      "<h2>Todas as Reservas — Controle de Pagamento</h2>" +
+      "<table><thead><tr><th>Data</th><th>Hora</th><th>Nome</th><th>Quadra</th><th>Esporte</th><th style=\"text-align:right\">Valor</th><th>Status</th><th>Origem</th></tr></thead><tbody>" + bkRows + "</tbody></table>" +
 
-    <div style="margin-top:40px;padding-top:16px;border-top:1px solid #eee;color:#aaa;font-size:11px;text-align:center">
-      Relatório gerado pelo sistema Na Praia Arena · ${ts}
-    </div>
-    </body></html>`;
+      "<div style=\"margin-top:32px;padding-top:12px;border-top:1px solid #eee;color:#aaa;font-size:10px;text-align:center\">Na Praia Arena Multi Esportiva · Dionísio - MG · " + ts + "</div>" +
+      "</body></html>";
 
     const blob = new Blob([html], { type:"text/html" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url;
-    a.download = `napraia-relatorio-${fmt(now)}.html`;
+    a.download = "napraia-relatorio-" + rLabel.replace(/[^a-z0-9]/gi,"-") + ".html";
     a.click();
     URL.revokeObjectURL(url);
-    toast_("Relatório gerado! Abra o arquivo e use Ctrl+P → Salvar como PDF");
+    toast_("Relatório gerado! Abra o arquivo e use Ctrl+P para salvar como PDF");
     setReportGenerated(ts);
   }
 
@@ -1133,24 +1187,22 @@ export default function App() {
                 )}
 
                 {/* ─── TAB PREÇOS ─── */}
-                {adminTab==="valores"&&(
-                  <div style={{maxWidth:500}}>
-                    <Section title="💰 Valores cobrados por hora">
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:16,marginBottom:16}}>
+                                {adminTab==="valores"&&(
+                  <div style={{maxWidth:560}}>
+                    <Section title="💰 Valores por hora de aluguel">
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
                         {[
-                          {key:"common",  label:"Usuário Avulso",  icon:"📲", color:"#fff"},
-                          {key:"regular", label:"Usuário Regular", icon:"⭐", color:"#f97316"},
-                        ].map(({key,label,icon,color})=>(
+                          {key:"common",  label:"Usuário Avulso",   desc:"Reservas sem vínculo regular", icon:"💳", color:"#fff"},
+                          {key:"regular", label:"Usuário Regular",  desc:"Dia/hora fixo semanal cadastrado", icon:"⭐", color:"#f97316"},
+                        ].map(({key,label,desc,icon,color})=>(
                           <div key={key} style={{background:"#1a1a1a",border:"1px solid #2a2a2a",borderRadius:14,padding:20}}>
-                            <div style={{fontSize:22,marginBottom:8}}>{icon}</div>
-                            <div style={{fontWeight:700,color,marginBottom:4}}>{label}</div>
-                            <div style={{color:"#888",fontSize:12,marginBottom:14}}>
-                              {key==="common"?"Reservas sem vínculo regular":"Reservas no dia/hora fixo cadastrado"}
-                            </div>
+                            <div style={{fontSize:24,marginBottom:8}}>{icon}</div>
+                            <div style={{fontWeight:700,color,marginBottom:4,fontSize:15}}>{label}</div>
+                            <div style={{color:"#777",fontSize:12,marginBottom:14}}>{desc}</div>
                             <div style={{display:"flex",alignItems:"center",gap:6}}>
                               <span style={{color:"#888",fontSize:16,fontWeight:700}}>R$</span>
                               <input type="number" min="1"
-                                style={{...S.inp,width:80,fontSize:20,fontWeight:900,textAlign:"center",color}}
+                                style={{...S.inp,width:80,fontSize:22,fontWeight:900,textAlign:"center",color}}
                                 value={pEdit[key]}
                                 onChange={e=>setPEdit(p=>({...p,[key]:e.target.value}))}/>
                               <span style={{color:"#555",fontSize:13}}>/hora</span>
@@ -1160,15 +1212,15 @@ export default function App() {
                         ))}
                       </div>
                       <div style={S.infoBox}>
-                        💡 O desconto de regular é aplicado automaticamente quando o usuário reserva exatamente no dia da semana e horário que escolheu no cadastro.
+                        💡 O desconto de regular é aplicado automaticamente quando o usuário reserva no seu dia/hora fixo cadastrado. Patrocinadores que ultrapassam o limite semanal são cobrados pelo valor <strong>Regular (R$ {prices.regular}/h)</strong>.
                       </div>
                       <button style={{...S.btnO,marginTop:16}} onClick={savePrices}>Salvar Preços</button>
                     </Section>
 
                     <Section title="👥 Divisão Societária">
-                      <div style={{...S.infoBox,marginBottom:16}}>
-                        Configure o nome e percentual de cada sócio. O total deve ser 100%.
-                        Total atual: <strong style={{color: partners.reduce((s,p)=>s+Number(p.pct),0)===100?"#22c55e":"#ef4444"}}>
+                      <div style={{...S.infoBox,marginBottom:14}}>
+                        Percentuais aplicados sobre o lucro líquido (receitas − despesas).
+                        Total: <strong style={{color:partners.reduce((s,p)=>s+Number(p.pct),0)===100?"#22c55e":"#ef4444"}}>
                           {partners.reduce((s,p)=>s+Number(p.pct),0)}%
                         </strong>
                       </div>
@@ -1177,40 +1229,64 @@ export default function App() {
                           <input style={{...S.inp,flex:2}} value={p.name}
                             onChange={e=>setPartners(ps=>ps.map((x,j)=>j===i?{...x,name:e.target.value}:x))}
                             placeholder="Nome do sócio"/>
-                          <input style={{...S.inp,flex:1,textAlign:"center"}} type="number" min="0" max="100"
+                          <input style={{...S.inp,flex:"0 0 70px",textAlign:"center"}} type="number" min="0" max="100"
                             value={p.pct}
                             onChange={e=>setPartners(ps=>ps.map((x,j)=>j===i?{...x,pct:Number(e.target.value)}:x))}/>
-                          <span style={{color:"#888",fontSize:14}}>%</span>
-                          <button style={{...S.aBlue,fontSize:12}} onClick={()=>setPartners(ps=>ps.filter((_,j)=>j!==i))}>✕</button>
+                          <span style={{color:"#888"}}>%</span>
+                          <button style={{...S.aBlue,padding:"8px 10px"}}
+                            onClick={()=>setPartners(ps=>ps.filter((_,j)=>j!==i))}>✕</button>
                         </div>
                       ))}
-                      <button style={{...S.btnG,fontSize:13,marginTop:4}}
-                        onClick={()=>setPartners(ps=>[...ps,{name:"",pct:0}])}>+ Adicionar sócio</button>
-                      <button style={{...S.btnO,fontSize:13,marginTop:8,marginLeft:8}}
-                        onClick={()=>toast_("Divisão societária salva!")}>Salvar</button>
+                      <div style={{display:"flex",gap:10,marginTop:8}}>
+                        <button style={{...S.btnG,fontSize:13}}
+                          onClick={()=>setPartners(ps=>[...ps,{name:"",pct:0}])}>+ Adicionar sócio</button>
+                        <button style={{...S.btnO,fontSize:13}}
+                          onClick={()=>toast_("Divisão societária salva!")}>Salvar</button>
+                      </div>
                     </Section>
-
                   </div>
                 )}
 
 
                 {/* ─── TAB PATROCINADORES ─── */}
-                {adminTab==="patrocinadores"&&(
-                  <div style={{maxWidth:600}}>
-                    <Section title="🤝 Gerenciar Patrocinadores">
+                                {adminTab==="patrocinadores"&&(
+                  <div style={{maxWidth:640}}>
+                    <Section title="🤝 Patrocinadores">
                       <div style={{...S.infoBox,marginBottom:20}}>
-                        Patrocinadores têm horas gratuitas por semana. Ao ultrapassar o limite, cobra-se R$ {prices.common}/hora pela diferença.
+                        Patrocinadores têm horas gratuitas por semana (ciclo: segunda a domingo).
+                        Se ultrapassarem o limite, cobrar R$ <strong style={{color:"#f97316"}}>{prices.regular}</strong>/h (valor regular) pela diferença.
+                        No relatório aparece como <strong style={{color:"#a855f7"}}>"Patrocinador"</strong> — valor não entra no faturamento.
                       </div>
+
+                      {sponsors.length===0&&(
+                        <div style={{...S.infoBox,marginBottom:16,color:"#555"}}>Nenhum patrocinador cadastrado ainda.</div>
+                      )}
+
                       {sponsors.map((sp,i)=>(
-                        <div key={i} style={{...S.bookCard,borderColor:"#a855f7",marginBottom:12}}>
-                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-                            <F label="Nome" v={sp.name} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,name:e.target.value}:x))} ph="Nome"/>
-                            <F label="Email" type="email" v={sp.email} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,email:e.target.value}:x))} ph="email@exemplo.com"/>
+                        <div key={i} style={{background:"#141414",border:"1px solid #a855f7",borderRadius:14,padding:18,marginBottom:14}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                            <div style={{color:"#a855f7",fontWeight:700,fontSize:15}}>🤝 Patrocinador {i+1}</div>
+                            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                              <button
+                                style={{background:sp.active?"#14532d":"#2a1010",color:sp.active?"#22c55e":"#ef4444",border:"none",borderRadius:8,padding:"5px 12px",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700}}
+                                onClick={()=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,active:!x.active}:x))}>
+                                {sp.active?"✓ Ativo":"✗ Inativo"}
+                              </button>
+                              <button style={{...S.aBlue,padding:"6px 10px"}}
+                                onClick={()=>setSponsors(ss=>ss.filter((_,j)=>j!==i))}>✕ Remover</button>
+                            </div>
                           </div>
-                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr auto",gap:10,alignItems:"flex-end"}}>
+
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                            <F label="Nome / Empresa" v={sp.name||""} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,name:e.target.value}:x))} ph="Nome do patrocinador"/>
+                            <F label="Email da conta" type="email" v={sp.email||""} set={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,email:e.target.value}:x))} ph="email@patrocinador.com"/>
+                          </div>
+
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
                             <div style={S.fg}>
-                              <label style={S.lbl}>Horas/semana gratuitas</label>
-                              <input type="number" min="1" max="20" style={S.inp} value={sp.hoursPerWeek||1}
+                              <label style={S.lbl}>Horas grátis / semana</label>
+                              <input type="number" min="1" max="20" style={{...S.inp,textAlign:"center",fontWeight:700,fontSize:16}}
+                                value={sp.hoursPerWeek||1}
                                 onChange={e=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,hoursPerWeek:Number(e.target.value)}:x))}/>
                             </div>
                             <div style={S.fg}>
@@ -1223,24 +1299,34 @@ export default function App() {
                               </select>
                             </div>
                             <div style={S.fg}>
-                              <label style={S.lbl}>Status</label>
-                              <button style={{...S.inp,cursor:"pointer",background:sp.active?"#14532d":"#2a1010",color:sp.active?"#22c55e":"#ef4444",border:`1px solid ${sp.active?"#22c55e":"#ef4444"}`}}
-                                onClick={()=>setSponsors(ss=>ss.map((x,j)=>j===i?{...x,active:!x.active}:x))}>
-                                {sp.active?"✓ Ativo":"✗ Inativo"}
-                              </button>
+                              <label style={S.lbl}>Horas usadas esta semana</label>
+                              <div style={{...S.inp,textAlign:"center",fontWeight:700,fontSize:16,
+                                color:getSponsorUsedHours(sp.email)>=(sp.hoursPerWeek||1)?"#ef4444":"#22c55e",
+                                cursor:"default"}}>
+                                {getSponsorUsedHours(sp.email)} / {sp.hoursPerWeek||1}h
+                              </div>
                             </div>
-                            <button style={{...S.aBlue,fontSize:12,alignSelf:"flex-end",padding:"10px 12px"}}
-                              onClick={()=>setSponsors(ss=>ss.filter((_,j)=>j!==i))}>✕</button>
                           </div>
+
+                          {sp.email&&(
+                            <div style={{...S.infoBox,marginTop:12,fontSize:12}}>
+                              {getSponsorUsedHours(sp.email) >= (sp.hoursPerWeek||1)
+                                ? <span style={{color:"#ef4444"}}>⚠️ Limite atingido — próximas reservas cobradas R$ {prices.regular}/h</span>
+                                : <span style={{color:"#22c55e"}}>✅ Ainda tem {(sp.hoursPerWeek||1) - getSponsorUsedHours(sp.email)}h gratuita(s) disponível(is) esta semana</span>
+                              }
+                            </div>
+                          )}
                         </div>
                       ))}
-                      <button style={{...S.btnO,marginTop:8}}
+
+                      <button style={{...S.btnO,marginTop:4}}
                         onClick={()=>setSponsors(ss=>[...ss,{name:"",email:"",hoursPerWeek:2,dayType:"any",active:true}])}>
                         + Adicionar Patrocinador
                       </button>
                     </Section>
                   </div>
                 )}
+
 
                 {/* ─── TAB DESPESAS ─── */}
                 {adminTab==="despesas"&&(
