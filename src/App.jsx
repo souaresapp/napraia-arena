@@ -1457,35 +1457,6 @@ export default function App() {
 
                     <Section title="✏️ Editar Status de Pagamento">
                       <PaymentEditor bookings={bookings} setEditPayModal={setEditPayModal}/>
-                      <div style={{maxHeight:400,overflowY:"auto"}}>
-                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                          <thead>
-                            <tr style={{background:"#1a1a1a"}}>
-                              {["Data","Horário","Nome","Valor","Status","Ação"].map(h=>(
-                                <th key={h} style={{padding:"8px 10px",textAlign:"left",color:"#888",fontWeight:600,borderBottom:"1px solid #2a2a2a"}}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(bookings).sort((a,b)=>a[1].date.localeCompare(b[1].date)).map(([key,b])=>{
-                              const status = b.paid?"✅ Pago":b.paidLater?"⏳ Pago depois":b.payError?"❌ Erro":"⚠️ Pendente";
-                              const statusColor = b.paid?"#22c55e":b.paidLater?"#60a5fa":b.payError?"#ef4444":"#f59e0b";
-                              return (
-                                <tr key={key} style={{borderBottom:"1px solid #1a1a1a"}}>
-                                  <td style={{padding:"7px 10px",color:"#ccc"}}>{b.date}</td>
-                                  <td style={{padding:"7px 10px",color:"#ccc"}}>{b.hour}</td>
-                                  <td style={{padding:"7px 10px",color:"#fff",fontWeight:600}}>{b.name}</td>
-                                  <td style={{padding:"7px 10px",color:"#f97316"}}>R$ {b.amount}</td>
-                                  <td style={{padding:"7px 10px",color:statusColor,fontWeight:600}}>{status}</td>
-                                  <td style={{padding:"7px 10px"}}>
-                                    <button style={{...S.aBlue,fontSize:11}} onClick={()=>setEditPayModal(key)}>✏️ Editar</button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
                     </Section>
                   </div>
                 )}
