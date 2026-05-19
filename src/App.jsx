@@ -1225,7 +1225,7 @@ export default function App() {
                   </div>
                 )}
 
-adminTab==="gestao"&&(
+                {adminTab==="gestao"&&(
                   <div>
                     <div style={S.kpiGrid}>
                       <KPI icon="📋" label="Total Reservas" v={totalBk}/>
