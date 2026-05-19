@@ -167,8 +167,6 @@ export default function App() {
   const [reportPeriod, setReportPeriod] = useState("year");
   const [reportStart,  setReportStart]  = useState("");
   const [reportEnd,    setReportEnd]    = useState("");
- // booking key
-  const [reportGenerated, setReportGenerated] = useState(null);
 
   // Admin manual booking form
   const [manForm, setManForm] = useState({
@@ -1131,7 +1129,6 @@ export default function App() {
                   </div>
                 )}
                 {/* ─── TAB GESTÃO ─── */}
-                {
                 {adminTab==="patroc"&&(
                   <div style={{maxWidth:640}}>
                     <Section title="🤝 Patrocinadores">
